@@ -1,0 +1,2588 @@
+-- Snowflake Scripts -- 
+
+-- SQLS:
+--------------------------------------------------------
+-- create warehouse:
+DROP WAREHOUSE ADARSH_WH_TEST
+
+CREATE WAREHOUSE ADARSH_WH_TEST WITH WAREHOUSE_SIZE = 'XSMALL'
+WAREHOUSE_TYPE = 'STANDARD'
+AUTO_SUSPEND = 600
+MIN_CLUSTER_COUNT = 1
+MAX_CLUSTER_COUNT = 2
+SCALING_POLICY = 'STANDARD' 
+COMMENT = 'CREATING WAREHOUSE THROUGH SQL SCRIPT';
+--------------------------------------------------------
+-- creating database: 
+CREATE DATABASE first_db;
+CREATE DATABASE first_db COMMENT = 'this the first test db';
+--------------------------------------------------------
+-- creating a table:
+CREATE TABLE FIRST_DB.PUBLIC.FIRST_TEST_TABLE 
+("NAME" STRING NOT NULL DEFAULT 'noname', 
+"AGE" INTEGER, 
+"DATE" TIMESTAMP, 
+"CONSTANT" INTEGER DEFAULT 1);
+
+-- to drop table, make sure you are in that db and schema 
+DROP TABLE FIRST_DB.PUBLIC.FIRST_TEST_TABLE
+--------------------------------------------------------
+-- swtich databases:
+USE DATABASE OUR_FIRST_DB;
+--------------------------------------------------------
+-- LOADING DATA INTO A TABLE:
+ COPY INTO LOAN_PAYMENT
+    FROM s3://bucketsnowflakes3/Loan_payments_data.csv
+    file_format = (type = csv 
+                   field_delimiter = ',' 
+                   skip_header=1);
+// EXAMPLE: 
+CREATE DATABASE EXCERCISE_DB;
+USE DATABASE EXCERCISE_DB;
+
+CREATE TABLE CUSTOMERS(
+"ID" INT,
+"first_name" varchar,
+"last_name" varchar,
+"email" varchar,
+"age" int,
+"city" varchar
+);
+
+COPY INTO CUSTOMERS
+FROM s3://snowflake-assignments-mc/gettingstarted/customers.csv
+FILE_FORMAT = (TYPE = CSV,
+               FIELD_DELIMITER = ','
+               SKIP_HEADER=1);
+            
+SELECT COUNT(*) FROM CUSTOMERS;
+
+-- note that the default schema it took was 'public' 
+-- skip_header 1 means header is in the first line and consider all data excluding it
+
+--------------------------------------------------------
+-- CREATING EXTERNAL STAGE --  BULK LOADING -- PUBLIC BUCKET
+
+USE DATABASE EXCERCISE_DB;
+CREATE OR REPLACE DATABASE MANAGE_DB;
+CREATE OR REPLACE SCHEMA external_stages;
+
+CREATE OR REPLACE STAGE MANAGE_DB.external_stages.aws_stage
+    url='s3://bucketsnowflakes3'
+    credentials=(aws_key_id='ABCD_DUMMY_ID' aws_secret_key='1234abcd_key');
+    
+desc stage MANAGE_DB.external_stages.aws_stage
+LIST @aws_stage;
+
+ALTER STAGE aws_stage
+    SET credentials=(aws_key_id='XYZ_DUMMY_ID' aws_secret_key='987xyz');
+LIST @aws_stage;
+
+CREATE OR REPLACE STAGE MANAGE_DB.external_stages.aws_stage
+    url='s3://bucketsnowflakes3';
+LIST @aws_stage;
+
+-- since this is a piublic bucket with no creendtials, we could only see the objects in the backup using the 3rd list command, where the stage is made with no credentials 
+-- if its not a public bucket and credntials are needed, this is the syntax, but its not recommended as credentials can be read this way 
+
+--------------------------------------------------------
+-- COPY / LOAD DATA INTO TABLE FROM STAGE -- BULK LOADING
+
+CREATE OR REPLACE DATABASE OUR_FIRST_DB;
+
+CREATE OR REPLACE TABLE OUR_FIRST_DB.PUBLIC.ORDERS (
+    ORDER_ID VARCHAR(30),
+    AMOUNT INT,
+    PROFIT INT,
+    QUANTITY INT,
+    CATEGORY VARCHAR(30),
+    SUBCATEGORY VARCHAR(30));
+
+LIST @MANAGE_DB.external_stages.aws_stage;
+
+-- COPY FROM ONE FILE IN STAGE
+COPY INTO OUR_FIRST_DB.PUBLIC.ORDERS
+    FROM @MANAGE_DB.external_stages.aws_stage
+    file_format= (type = csv field_delimiter=',' skip_header=1)
+    files = ('OrderDetails.csv');
+
+-- COPY FROM MULTIPLE FILES IN STAGE
+COPY INTO OUR_FIRST_DB.PUBLIC.ORDERS
+    FROM @MANAGE_DB.external_stages.aws_stage
+    file_format= (type = csv field_delimiter=',' skip_header=1)
+    pattern='.*Order.*';
+ 
+-- note that fully qualified names (full path with db and schema) are to be used due to multiple contexts 
+-- just like we use * to specify 'everything', here in snowflake you use '.*'
+-- also note that once a file is loaded into a table, the second time, it'll check for changes, and copy the changes to the table instead of re-copying the whole table. it knows through metadata
+
+--------------------------------------------------------
+-- TRANSFORMING DATA-- 
+-- TRANSFORM, CREATE, LOAD, COPY DATA INTO TABLE USING SQL TRANSFORMATIONS -- 
+CREATE OR REPLACE TABLE OUR_FIRST_DB.PUBLIC.ORDERS_EX (
+    ORDER_ID VARCHAR(30),
+    AMOUNT INT,
+    PROFIT INT,
+    PROFITABLE_FLAG VARCHAR(30),
+    CATEGORY_SUBSTRING VARCHAR(5)
+    )
+
+LIST @MANAGE_DB.external_stages.aws_stage;
+
+COPY INTO OUR_FIRST_DB.PUBLIC.ORDERS_EX
+    FROM (select 
+            s.$1,
+            s.$2, 
+            s.$3,
+            CASE WHEN CAST(s.$3 as int) < 0 THEN 'not profitable' ELSE 'profitable' END,
+            substring(s.$5,1,5)
+          from @MANAGE_DB.external_stages.aws_stage s)
+    file_format= (type = csv field_delimiter=',' skip_header=1)
+    files=('OrderDetails.csv');
+
+select top 10 * from ORDERS_EX;
+select * from orders_ex limit 10;
+-- $1 and $2 measn the first and second columns in the csv file 
+-- all functions (subset of functions that can be used during copy into command from stage) can be found under "supporting functions" in the "transforming data during a load" tab in the official documentation 
+
+--------------------------------------------------------
+-- COPY DATA INTO SPECIFIC COLUMNS ONLY -- 
+
+CREATE OR REPLACE TABLE OUR_FIRST_DB.PUBLIC.ORDERS_EX (
+    ORDER_ID VARCHAR(30),
+    AMOUNT INT,
+    PROFIT INT,
+    PROFITABLE_FLAG VARCHAR(30)
+
+    );
+COPY INTO OUR_FIRST_DB.PUBLIC.ORDERS_EX (ORDER_ID,PROFIT)
+    FROM (select 
+            s.$1,
+            s.$3
+          from @MANAGE_DB.external_stages.aws_stage s)
+    file_format= (type = csv field_delimiter=',' skip_header=1)
+    files=('OrderDetails.csv');
+  
+select top 10 * from ORDERS_EX; 
+
+--------------------------------------------------------
+-- Table Auto increment -- 
+
+CREATE OR REPLACE TABLE OUR_FIRST_DB.PUBLIC.ORDERS_EX (
+    ORDER_ID number autoincrement start 1 increment 1,
+    AMOUNT INT,
+    PROFIT INT,
+    PROFITABLE_FLAG VARCHAR(30)
+    );
+
+COPY INTO OUR_FIRST_DB.PUBLIC.ORDERS_EX (PROFIT,AMOUNT)
+    FROM (select 
+            s.$2,
+            s.$3
+          from @MANAGE_DB.external_stages.aws_stage s)
+    file_format= (type = csv field_delimiter=',' skip_header=1)
+    files=('OrderDetails.csv');
+
+--------------------------------------------------------
+-- ERROR HANDLING -- 
+
+// Create new stage
+ CREATE OR REPLACE STAGE MANAGE_DB.external_stages.aws_stage_errorex
+    url='s3://bucketsnowflakes4';
+
+// List files in stage
+ LIST @MANAGE_DB.external_stages.aws_stage_errorex;
+ 
+CREATE OR REPLACE TABLE OUR_FIRST_DB.PUBLIC.ORDERS_EX (
+    ORDER_ID VARCHAR(30),
+    AMOUNT INT,
+    PROFIT INT,
+    QUANTITY INT,
+    CATEGORY VARCHAR(30),
+    SUBCATEGORY VARCHAR(30));
+    
+-- CONTINUE ON ERROR -- 
+
+COPY INTO OUR_FIRST_DB.PUBLIC.ORDERS_EX
+    FROM @MANAGE_DB.external_stages.aws_stage_errorex
+    file_format= (type = csv field_delimiter=',' skip_header=1)
+    files = ('OrderDetails_error.csv')
+    ON_ERROR = 'CONTINUE';
+    
+-- DEFAULT -- ABORT STATEMENT ON ERROR -- 
+
+COPY INTO OUR_FIRST_DB.PUBLIC.ORDERS_EX
+    FROM @MANAGE_DB.external_stages.aws_stage_errorex
+    file_format= (type = csv field_delimiter=',' skip_header=1)
+    files = ('OrderDetails_error.csv','OrderDetails_error2.csv')
+    ON_ERROR = 'ABORT_STATEMENT';
+    
+-- MULTIPLE STAGE FILES -- SKIP FILE ON ERROR -- 
+
+COPY INTO OUR_FIRST_DB.PUBLIC.ORDERS_EX
+    FROM @MANAGE_DB.external_stages.aws_stage_errorex
+    file_format= (type = csv field_delimiter=',' skip_header=1)
+    files = ('OrderDetails_error.csv','OrderDetails_error2.csv')
+    ON_ERROR = 'SKIP_FILE';
+    
+-- CONTINUE ON ERROR UNTIL ERROR LIMIT -- 
+
+COPY INTO OUR_FIRST_DB.PUBLIC.ORDERS_EX
+    FROM @MANAGE_DB.external_stages.aws_stage_errorex
+    file_format= (type = csv field_delimiter=',' skip_header=1)
+    files = ('OrderDetails_error.csv','OrderDetails_error2.csv')
+    ON_ERROR = 'SKIP_FILE_2';  
+
+-- ON_ERROR = 'SKIP_FILE_2' means skip file once errors are accounted 
+-- ON_ERROR = 'SKIP_FILE_2%' means skip file once 2% (of total records) error limit is reached
+-- ON_ERROR = 'SKIP_FILE_0.2%'
+
+--------------------------------------------------------
+-- FILE FORMATS --  
+
+-- WITHOUT FILE FORMAT OBJECT -- 
+COPY INTO OUR_FIRST_DB.PUBLIC.ORDERS_EX
+    FROM @MANAGE_DB.external_stages.aws_stage_errorex
+    file_format = (type = csv field_delimiter=',' skip_header=1)
+    files = ('OrderDetails_error.csv')
+    ON_ERROR = 'SKIP_FILE_3'; 
+
+-- USING FILE FORMAT -- 
+CREATE OR REPLACE TABLE OUR_FIRST_DB.PUBLIC.ORDERS_EX (
+    ORDER_ID VARCHAR(30),
+    AMOUNT INT,
+    PROFIT INT,
+    QUANTITY INT,
+    CATEGORY VARCHAR(30),
+    SUBCATEGORY VARCHAR(30)); 
+
+// Creating schema to keep things organized
+CREATE OR REPLACE SCHEMA MANAGE_DB.file_formats;
+
+// Creating file format object
+CREATE OR REPLACE file format MANAGE_DB.file_formats.my_file_format;
+
+// See properties of file format object
+DESC file format MANAGE_DB.file_formats.my_file_format;
+
+// Using file format object in Copy command       
+COPY INTO OUR_FIRST_DB.PUBLIC.ORDERS_EX
+    FROM @MANAGE_DB.external_stages.aws_stage_errorex
+    file_format= (FORMAT_NAME=MANAGE_DB.file_formats.my_file_format)
+    files = ('OrderDetails_error.csv')
+    ON_ERROR = 'SKIP_FILE_3'; 
+
+-- OVERWRITE DEFAULT OR SET PARAMETERS -- 
+// Defining properties on creation of file format object   
+CREATE OR REPLACE file format MANAGE_DB.file_formats.my_file_format
+    TYPE=JSON,
+    TIME_FORMAT=AUTO;    
+
+// Recreate file format (default = CSV)
+CREATE OR REPLACE file format MANAGE_DB.file_formats.my_file_format
+
+TRUNCATE table OUR_FIRST_DB.PUBLIC.ORDERS_EX;
+
+// Overwriting properties of file format object      
+COPY INTO OUR_FIRST_DB.PUBLIC.ORDERS_EX
+    FROM  @MANAGE_DB.external_stages.aws_stage_errorex
+    file_format = (FORMAT_NAME= MANAGE_DB.file_formats.my_file_format  field_delimiter = ',' skip_header=1 )
+    files = ('OrderDetails_error.csv')
+    ON_ERROR = 'SKIP_FILE_3'; 
+
+DESC STAGE MANAGE_DB.external_stages.aws_stage_errorex;
+
+-- just like how stages can be used as objects, file formats (from above scripts) can be set as an object. 
+-- it is best practice also to create file formats 
+-- similar to stages, its also good practice to use a seperate schema for file formats, just to keep things organized 
+-- NOTE: snowflake does not allow you to alter the file format TYPE parameter but you can alter any other parameter. Default is CSV and in order to change, you need to re-create the file format object
+-- you can specify specific parameters that are set as default for file format object, while using the copy command (PARAMETERS ARE OVERWRITTEN)
+-- the properties or parameters for fileformat object can be set and are the same as the stage object. its good practice to have separate file format objects as well. 
+
+--------------------------------------------------------
+ ---- Assignment - Create file format & load data ----
+ 
+-- create stage object
+CREATE OR REPLACE STAGE EXERCISE_DB.public.aws_stage
+    url='s3://snowflake-assignments-mc/fileformat';
+
+-- List files in stage
+LIST @EXERCISE_DB.public.aws_stage;
+
+-- create file format object
+CREATE OR REPLACE FILE FORMAT EXERCISE_DB.public.aws_fileformat
+TYPE = CSV
+FIELD_DELIMITER='|'
+SKIP_HEADER=1;
+
+-- Load the data 
+COPY INTO EXERCISE_DB.PUBLIC.CUSTOMERS
+    FROM @aws_stage
+      file_format= (FORMAT_NAME=EXERCISE_DB.public.aws_fileformat)
+      
+-- Alternative
+COPY INTO EXERCISE_DB.PUBLIC.CUSTOMERS
+    FROM @aws_stage
+      file_format= EXERCISE_DB.public.aws_fileformat
+      
+--------------------------------------------------------
+-- VALIDATION_MODE -- 
+
+-- validation and on_error options are very different. Validation option returns errors during copy command and on_error controlled how far to continue 
+-- VALIDATION_MODE = RETURN_ERRORS ; VALIDATION_MODE = RETURN_1_ROWS
+-- 1 or any number 
+
+-- ASSIGNMENT -- 
+create or replace table EXCERCISE_DB.PUBLIC.customer (
+customer_id int,
+first_name varchar(50),
+last_name varchar(50),
+email varchar(50),
+age int,
+department varchar(50)
+);
+
+CREATE OR REPLACE STAGE EXCERCISE_DB.PUBLIC.aws_stage_validaiton
+url='s3://snowflake-assignments-mc/copyoptions/example1';
+
+list @EXCERCISE_DB.PUBLIC.aws_stage_validaiton;
+
+create or replace file format EXCERCISE_DB.PUBLIC.VALIDATION_FF
+TYPE = CSV,
+FIELD_DELIMITER = ',',
+SKIP_HEADER=1;
+
+use warehouse compute_wh;
+
+copy into EXCERCISE_DB.PUBLIC.customer
+from @EXCERCISE_DB.PUBLIC.aws_stage_validaiton
+file_format = (FORMAT_NAME= EXCERCISE_DB.PUBLIC.VALIDATION_FF)
+ON_ERROR = 'CONTINUE';
+--VALIDATION_MODE = RETURN_ERRORS;
+
+truncate table EXCERCISE_DB.PUBLIC.customer;
+
+SELECT COUNT(*) FROM EXCERCISE_DB.PUBLIC.customer;
+
+-- USING VALIDATION MODE -- 
+
+CREATE OR REPLACE STAGE EXCERCISE_DB.PUBLIC.aws_stage_copy
+url='s3://snowflakebucket-copyoption/returnfailed/';
+
+LIST @EXCERCISE_DB.PUBLIC.aws_stage_copy;
+
+CREATE OR REPLACE TABLE EXCERCISE_DB.PUBLIC.ORDERS (
+    ORDER_ID VARCHAR(30),
+    AMOUNT VARCHAR(30),
+    PROFIT INT,
+    QUANTITY INT,
+    CATEGORY VARCHAR(30),
+    SUBCATEGORY VARCHAR(30));
+    
+truncate table EXCERCISE_DB.PUBLIC.ORDERS;
+
+-- Validation Mode 
+use database EXCERCISE_DB;
+
+COPY INTO EXCERCISE_DB.PUBLIC.ORDERS
+    FROM @aws_stage_copy
+    file_format= (type = csv field_delimiter=',' skip_header=1)
+    pattern='.*Order.*'
+    VALIDATION_MODE = RETURN_ERRORS;
+
+-- Storing rejected /failed results in a table
+CREATE OR REPLACE TABLE rejected AS 
+select rejected_record from table(result_scan(last_query_id()));
+
+SELECT * FROM rejected;
+
+-- OR
+INSERT INTO rejected
+select rejected_record from table(result_scan(last_query_id()));
+
+---- Saving rejected files without VALIDATION_MODE / with ON_ERROR ---- 
+
+COPY INTO EXCERCISE_DB.PUBLIC.ORDERS
+    FROM @aws_stage_copy
+    file_format= (type = csv field_delimiter=',' skip_header=1)
+    pattern='.*Order.*'
+    ON_ERROR=CONTINUE;
+  
+  
+select * from table(validate(orders, job_id => '_last'));
+
+---- Working with rejected records ---- 
+
+CREATE OR REPLACE TABLE rejected AS 
+select rejected_record from table(result_scan(last_query_id()));
+
+SELECT REJECTED_RECORD FROM rejected;
+
+CREATE OR REPLACE TABLE rejected_values as
+SELECT 
+SPLIT_PART(rejected_record,',',1) as ORDER_ID, 
+SPLIT_PART(rejected_record,',',2) as AMOUNT, 
+SPLIT_PART(rejected_record,',',3) as PROFIT, 
+SPLIT_PART(rejected_record,',',4) as QUATNTITY, 
+SPLIT_PART(rejected_record,',',5) as CATEGORY, 
+SPLIT_PART(rejected_record,',',6) as SUBCATEGORY
+FROM rejected; 
+
+SELECT * FROM rejected_values;
+
+--------------------------------------------------------
+-- SIZE_LIMIT  -- 
+
+-- in the copy command, if you add SIZE_LIMIT = 30000 at the end of the copy command, that means starting from the first file, data will be loaded until 30000 bytes or 30 kb is load. If the first file has 20000 and second has 20000, that means it will lead until have of seccond file and stop the copy command. 
+
+//Load data using copy command
+COPY INTO COPY_DB.PUBLIC.ORDERS
+    FROM @aws_stage_copy
+    file_format= (type = csv field_delimiter=',' skip_header=1)
+    pattern='.*Order.*'
+    SIZE_LIMIT=20000;
+
+--------------------------------------------------------
+-- RETURN_FAILED_ONLY -- 
+
+-- RETURN_FAILED_ONLY = TRUE; in the copy command, returns the files that had errors and not display/return the files that were fully loaded. default is FALSE 
+
+-- example
+COPY INTO COPY_DB.PUBLIC.ORDERS
+    FROM @aws_stage_copy
+    file_format= (type = csv field_delimiter=',' skip_header=1)
+    pattern='.*Order.*'
+    ON_ERROR =CONTINUE
+    RETURN_FAILED_ONLY = TRUE;
+    
+--------------------------------------------------------
+-- TRUNCATECOLUMNS -- 
+
+-- default is FALSE but if TRUNCATECOLUMNS = TRUE in the copy command, that means, for example, if the DDL for a column has VARCHAR(40) and the character length of the record for that column exceeds 40 characters, then this option will take in the first 40 characters only. 
+-- this is will lead to fully loaded files, but truncated beyond of its definition limits instead of omitting the record entirely while using on_error option
+
+-- for example: 
+COPY INTO COPY_DB.PUBLIC.ORDERS
+    FROM @aws_stage_copy
+    file_format= (type = csv field_delimiter=',' skip_header=1)
+    pattern='.*Order.*'
+    TRUNCATECOLUMNS = true; 
+
+--------------------------------------------------------
+-- FORCE -- 
+
+-- default is FALSE, but if FORCE = TRUE is set in the copy command, then snowflake will force load even if a particular file has been loaded already. 
+-- this may lead to data duplication or redundancy issues 
+
+-- for example: 
+COPY INTO COPY_DB.PUBLIC.ORDERS
+    FROM @aws_stage_copy
+    file_format= (type = csv field_delimiter=',' skip_header=1)
+    pattern='.*Order.*'
+    FORCE = TRUE;
+    
+--------------------------------------------------------
+-- Load History --
+
+-- you can view/ query load history data through information schema and views 
+-- you can view the loaded file history from below: 
+SELECT * FROM information_schema.load_history
+
+-- for example: 
+// Filter on specific table & schema
+SELECT * FROM snowflake.account_usage.load_history
+  where schema_name='PUBLIC' and
+  table_name='ORDERS'
+  
+  
+// Filter on specific table & schema
+SELECT * FROM snowflake.account_usage.load_history
+  where schema_name='PUBLIC' and
+  table_name='ORDERS' and
+  error_count > 0
+  
+  
+// Filter on specific table & schema (this query is for data from yesterday to today)
+SELECT * FROM snowflake.account_usage.load_history
+WHERE DATE(LAST_LOAD_TIME) <= DATEADD(days,-1,CURRENT_DATE)
+
+--------------------------------------------------------
+-- Fail Safe --
+
+-- failsafe data usage details can be viewed in GUI or can be queried from snowflake views.
+-- for both, you need to use account admin role to view this information
+-- to query, you could use these views: 
+// Storage usage on account level formatted
+
+SELECT 	USAGE_DATE, 
+		STORAGE_BYTES / (1024*1024*1024) AS STORAGE_GB,  
+		STAGE_BYTES / (1024*1024*1024) AS STAGE_GB,
+		FAILSAFE_BYTES / (1024*1024*1024) AS FAILSAFE_GB
+FROM SNOWFLAKE.ACCOUNT_USAGE.STORAGE_USAGE ORDER BY USAGE_DATE DESC;
+
+// Storage usage on table level formatted
+
+SELECT 	ID, 
+		TABLE_NAME, 
+		TABLE_SCHEMA,
+		ACTIVE_BYTES / (1024*1024*1024) AS STORAGE_USED_GB,
+		TIME_TRAVEL_BYTES / (1024*1024*1024) AS TIME_TRAVEL_STORAGE_USED_GB,
+		FAILSAFE_BYTES / (1024*1024*1024) AS FAILSAFE_STORAGE_USED_GB
+FROM SNOWFLAKE.ACCOUNT_USAGE.TABLE_STORAGE_METRICS
+ORDER BY FAILSAFE_STORAGE_USED_GB DESC;
+
+--------------------------------------------------------
+-- LOADING UNSTRUCTURED DATA -- 
+
+-- CREATE STAGE >> LOAD RAW DATA (VARIANT DATATYPE) >> ANALYSE AND PARSE >> FLATTEN AND LOAD 
+-- ASSIGNMENT 7 + 8-- LOAD JSON DATA -- VARIANT DATATYPE 
+
+CREATE OR REPLACE STAGE EXCERCISE_DB.PUBLIC.aws_stage_USD
+url='s3://snowflake-assignments-mc/unstructureddata/';
+
+CREATE OR REPLACE FILE FORMAT EXCERCISE_DB.PUBLIC.USD_JSON
+TYPE = JSON;
+
+CREATE OR REPLACE TABLE EXCERCISE_DB.PUBLIC.JSON_RAW (
+RAW VARIANT
+);
+
+COPY INTO EXCERCISE_DB.PUBLIC.JSON_RAW
+FROM @EXCERCISE_DB.PUBLIC.aws_stage_USD
+FILE_FORMAT = (FORMAT_NAME = EXCERCISE_DB.PUBLIC.USD_JSON)
+ON_ERROR = CONTINUE;
+
+SELECT COUNT(*) FROM EXCERCISE_DB.PUBLIC.JSON_RAW;
+
+SELECT * FROM EXCERCISE_DB.PUBLIC.JSON_RAW LIMIT 1;
+
+SELECT 
+RAW:first_name::STRING AS FIRST_NAME,
+RAW:last_name::STRING AS LAST_NAME, 
+RAW:Skills[0]::STRING AS SKILLS_1,
+RAW:Skills[1]::STRING AS SKILLS_2,
+ARRAY_SIZE(RAW:Skills) AS SKILL_COUNT
+FROM EXCERCISE_DB.PUBLIC.JSON_RAW;
+
+CREATE TABLE EXCERCISE_DB.PUBLIC.JSON_TABLE AS 
+(
+SELECT 
+RAW:first_name::STRING AS FIRST_NAME,
+RAW:last_name::STRING AS LAST_NAME, 
+RAW:Skills[0]::STRING AS SKILLS_1,
+RAW:Skills[1]::STRING AS SKILLS_2,
+ARRAY_SIZE(RAW:Skills) AS SKILL_COUNT
+FROM EXCERCISE_DB.PUBLIC.JSON_RAW
+);
+
+SELECT * FROM EXCERCISE_DB.PUBLIC.JSON_TABLE WHERE FIRST_NAME ='Florina';
+
+-- Table Flattening: 
+ 
+ // instead of this:
+SELECT 
+    RAW_FILE:id::int as id,
+    RAW_FILE:first_name::STRING as First_name,
+    RAW_FILE:spoken_languages[0].language::STRING as First_language,
+    RAW_FILE:spoken_languages[0].level::STRING as Level_spoken
+FROM OUR_FIRST_DB.PUBLIC.JSON_RAW
+UNION ALL 
+SELECT 
+    RAW_FILE:id::int as id,
+    RAW_FILE:first_name::STRING as First_name,
+    RAW_FILE:spoken_languages[1].language::STRING as First_language,
+    RAW_FILE:spoken_languages[1].level::STRING as Level_spoken
+FROM OUR_FIRST_DB.PUBLIC.JSON_RAW
+UNION ALL 
+SELECT 
+    RAW_FILE:id::int as id,
+    RAW_FILE:first_name::STRING as First_name,
+    RAW_FILE:spoken_languages[2].language::STRING as First_language,
+    RAW_FILE:spoken_languages[2].level::STRING as Level_spoken
+FROM OUR_FIRST_DB.PUBLIC.JSON_RAW
+ORDER BY ID
+
+// you could use flatten table function to simplify the above query for the same result: 
+select
+      RAW_FILE:first_name::STRING as First_name,
+    f.value:language::STRING as First_language,
+   f.value:level::STRING as Level_spoken
+from OUR_FIRST_DB.PUBLIC.JSON_RAW, table(flatten(RAW_FILE:spoken_languages)) f;
+
+-- Create table with flatten table command: 
+
+CREATE OR REPLACE stage EXCERCISE_DB.PUBLIC.JSONSTAGE
+     url='s3://bucketsnowflake-jsondemo';
+
+CREATE OR REPLACE FILE FORMAT EXCERCISE_DB.PUBLIC.USD_JSON
+TYPE = JSON;
+
+CREATE OR REPLACE TABLE EXCERCISE_DB.PUBLIC.JSON_RAW (
+RAW VARIANT
+);
+
+COPY INTO EXCERCISE_DB.PUBLIC.JSON_RAW
+FROM @EXCERCISE_DB.PUBLIC.JSONSTAGE
+FILE_FORMAT = (FORMAT_NAME = EXCERCISE_DB.PUBLIC.USD_JSON)
+ON_ERROR = CONTINUE;   
+
+SELECT * FROM OUR_FIRST_DB.PUBLIC.JSON_RAW LIMIT 1;
+
+CREATE OR REPLACE TABLE EXCERCISE_DB.PUBLIC.LANGUAGES AS
+select
+      RAW:first_name::STRING as First_name,
+    f.value:language::STRING as First_language,
+   f.value:level::STRING as Level_spoken
+from EXCERCISE_DB.PUBLIC.JSON_RAW, table(flatten(RAW:spoken_languages)) f;
+
+SELECT * FROM EXCERCISE_DB.PUBLIC.LANGUAGES;
+
+--------------------------------------------------------
+-- QUERYING AND LOADING PARQUET DATA -- 
+
+-- Parquet is a dataformat is the Hadoop Apache ecosystem 
+-- its efficient with compression
+-- Querying: 
+
+CREATE OR REPLACE FILE FORMAT EXCERCISE_DB.PUBLIC.PARQUET_DATA
+    TYPE = 'parquet';
+
+CREATE OR REPLACE STAGE EXCERCISE_DB.PUBLIC.PARQUET_STAGE
+    url = 's3://snowflakeparquetdemo'   
+    FILE_FORMAT = EXCERCISE_DB.PUBLIC.PARQUET_DATA;
+
+LIST @EXCERCISE_DB.PUBLIC.PARQUET_STAGE;
+
+SELECT COUNT(*) FROM @EXCERCISE_DB.PUBLIC.PARQUET_STAGE;
+
+SELECT * FROM @EXCERCISE_DB.PUBLIC.PARQUET_STAGE LIMIT 1;
+
+SELECT COUNT(*) FROM (
+SELECT 
+$1:__index_level_0__,
+$1:cat_id,
+$1:date,
+$1:"__index_level_0__",
+$1:"cat_id",
+$1:"d",
+$1:"date",
+$1:"dept_id",
+$1:"id",
+$1:"item_id",
+$1:"state_id",
+$1:"store_id",
+$1:"value"
+FROM @EXCERCISE_DB.PUBLIC.PARQUET_STAGE);
+
+-- LOADING PARQUET DATA: 
+
+-- NOTE: for unstructured data, CSV as above, we need to create a RAW data table with variant datatype and then format the data for a new table. For parquet data, we can query the data directly from stage as shown above. 
+-- TO_TIMESTAMP_NTZ(current_timestamp) gives current timestamp with no timezone information 
+
+   // Adding metadata
+    
+SELECT 
+$1:__index_level_0__::int as index_level,
+$1:cat_id::VARCHAR(50) as category,
+DATE($1:date::int ) as Date,
+$1:"dept_id"::VARCHAR(50) as Dept_ID,
+$1:"id"::VARCHAR(50) as ID,
+$1:"item_id"::VARCHAR(50) as Item_ID,
+$1:"state_id"::VARCHAR(50) as State_ID,
+$1:"store_id"::VARCHAR(50) as Store_ID,
+$1:"value"::int as value,
+METADATA$FILENAME as FILENAME,
+METADATA$FILE_ROW_NUMBER as ROWNUMBER,
+TO_TIMESTAMP_NTZ(current_timestamp) as LOAD_DATE
+FROM @EXCERCISE_DB.PUBLIC.PARQUET_STAGE;
+
+// loading data 
+
+CREATE OR REPLACE TABLE EXCERCISE_DB.PUBLIC.PARQUET_TABLE (
+ROW_NUMBER int,
+index_level int,
+cat_id VARCHAR(50),
+date date,
+dept_id VARCHAR(50),
+id VARCHAR(50),
+item_id VARCHAR(50),
+state_id VARCHAR(50),
+store_id VARCHAR(50),
+value int,
+Load_date timestamp default TO_TIMESTAMP_NTZ(current_timestamp));
+
+copy into EXCERCISE_DB.PUBLIC.PARQUET_TABLE
+from (
+SELECT 
+METADATA$FILE_ROW_NUMBER,
+$1:__index_level_0__::int as index_level,
+$1:cat_id::VARCHAR(50) as category,
+DATE($1:date::int ) as Date,
+$1:"dept_id"::VARCHAR(50) as Dept_ID,
+$1:"id"::VARCHAR(50) as ID,
+$1:"item_id"::VARCHAR(50) as Item_ID,
+$1:"state_id"::VARCHAR(50) as State_ID,
+$1:"store_id"::VARCHAR(50) as Store_ID,
+$1:"value"::int as value,
+TO_TIMESTAMP_NTZ(current_timestamp)
+FROM @EXCERCISE_DB.PUBLIC.PARQUET_STAGE
+);
+
+--------------------------------------------------------
+-- PERFORMANCE OPTIMIZATION -- 
+
+-- things you do not have to worry about for performance optimization in snowflake (Snowflake manages):
+    -- adding indexes and primary keys 
+    -- creating table partitions 
+    -- analyzing the query execultion plan 
+    -- remove table full scans 
+-- snowflake automatically manages micro partitions 
+-- Performance optimization in snwoflake: 
+    - dedicated vWH seperated according to workloads 
+    - scaling up (increasing compute) for known high work load situations 
+    - scaling out (multicluster warehouse setup)
+    - automatic cache management for maximum usage 
+    - cluster keys for large tables 
+
+--------------------------------------------------------
+-- DEDICATED WAREHOUSES (theory):
+- For example, let us consider a snwoflake account with the following warehouses seperated based on workload: 
+    - BI WAREHOUSE | XS | ETL (INFROMATICA) | DATA SOURCES 
+    - DBA WAREHOUSE | XS 
+    - REPORTING | S | QLIK
+    - MAREKTING | S | TABLEAU
+    - DATASCIENCE | L | PYTHON | APACHE SPARK
+- steps to have deidacted warehouses: 
+    - IDENTIFY AND CLASSIFY :
+        - identify and classify groups of workloads or users 
+        - BI team, data science team, marketing team 
+    - CREATE VIRTUAL WAREHOUSE: 
+        - for every class of workload and assign users 
+- CONSIDERATIONS: 
+    - not too many VW; avoid underutilization 
+    - Refine Classifications; Work patters can change
+
+// creating warehouses (datascientists and dbas):
+use role SYSADMIN;
+
+CREATE WAREHOUSE DS_WH 
+WITH WAREHOUSE_SIZE = 'SMALL'
+WAREHOUSE_TYPE = 'STANDARD' 
+AUTO_SUSPEND = 300 
+AUTO_RESUME = TRUE 
+MIN_CLUSTER_COUNT = 1 
+MAX_CLUSTER_COUNT = 1 
+SCALING_POLICY = 'STANDARD';
+
+CREATE WAREHOUSE DBA_WH 
+WITH WAREHOUSE_SIZE = 'XSMALL'
+WAREHOUSE_TYPE = 'STANDARD' 
+AUTO_SUSPEND = 300 
+AUTO_RESUME = TRUE 
+MIN_CLUSTER_COUNT = 1 
+MAX_CLUSTER_COUNT = 1 
+SCALING_POLICY = 'STANDARD';
+
+// Create role for Data Scientists & DBAs
+use role ACCOUNTADMIN;
+
+CREATE ROLE DATA_SCIENTIST;
+GRANT USAGE ON WAREHOUSE DS_WH TO ROLE DATA_SCIENTIST;
+
+CREATE ROLE DBA;
+GRANT USAGE ON WAREHOUSE DBA_WH TO ROLE DBA;
+
+// Setting up users with roles
+
+// Data Scientists
+CREATE USER DS1 PASSWORD = 'DS1' LOGIN_NAME = 'DS1' DEFAULT_ROLE='DATA_SCIENTIST' DEFAULT_WAREHOUSE = 'DS_WH'  MUST_CHANGE_PASSWORD = FALSE;
+CREATE USER DS2 PASSWORD = 'DS2' LOGIN_NAME = 'DS2' DEFAULT_ROLE='DATA_SCIENTIST' DEFAULT_WAREHOUSE = 'DS_WH'  MUST_CHANGE_PASSWORD = FALSE;
+CREATE USER DS3 PASSWORD = 'DS3' LOGIN_NAME = 'DS3' DEFAULT_ROLE='DATA_SCIENTIST' DEFAULT_WAREHOUSE = 'DS_WH'  MUST_CHANGE_PASSWORD = FALSE;
+
+GRANT ROLE DATA_SCIENTIST TO USER DS1;
+GRANT ROLE DATA_SCIENTIST TO USER DS2;
+GRANT ROLE DATA_SCIENTIST TO USER DS3;
+
+// DBAs
+CREATE USER DBA1 PASSWORD = 'DBA1' LOGIN_NAME = 'DBA1' DEFAULT_ROLE='DBA' DEFAULT_WAREHOUSE = 'DBA_WH'  MUST_CHANGE_PASSWORD = FALSE;
+CREATE USER DBA2 PASSWORD = 'DBA2' LOGIN_NAME = 'DBA2' DEFAULT_ROLE='DBA' DEFAULT_WAREHOUSE = 'DBA_WH'  MUST_CHANGE_PASSWORD = FALSE;
+
+GRANT ROLE DBA TO USER DBA1;
+GRANT ROLE DBA TO USER DBA2;
+
+//DROPPING
+DROP USER DBA1;
+DROP USER DBA2;
+
+DROP USER DS1;
+DROP USER DS2;
+DROP USER DS3;
+
+DROP ROLE DATA_SCIENTIST;
+DROP ROLE DBA;
+
+DROP WAREHOUSE DS_WH;
+DROP WAREHOUSE DBA_WH;
+
+--------------------------------------------------------
+-- SCALING UP/DOWN OR OUT/IN --  
+
+-- scaling up: changing warehouse size; can be done anytime; used to run queries with more complexity 
+-- scaling out: adding more warehouses; done anytime; used to accommodate more users; multiclustering 
+-- considerations for scaling out/in: 
+    - Enterprise edition is a minimum 
+    - min = 1; max = very high; costs are based on credit consumption; 1 warehouse = 3hrs or 3 warehouses = 1 hr each; 
+
+ --------------------------------------------------------
+-- CACHING -- [THERE IS MORE TI CACHEING]
+
+-- snowflake saves cached data for 24 hrs or until the underlying data is changed 
+-- good practice to ensure that similar queries are run from the same warehouse 
+-- for example, data science team could run all queries from the same warehouse 
+
+-- CLUSTERING -- 
+
+-- clustering is only beneficial with tables that have terabytes of data 
+-- which columns to consider for clustering:
+    - columns that are frequently used in where clauses or joins 
+    - if two columns are being used frequently, then have 2 cluster keys 
+    - try to avoid columns that have all unique values or not enough distinct values (like M or F values in a column)
+-- you can add cluster keys (1, list of columns, or expression) in CREATE TABLE or later as well
+
+ALTER TABLE ORDERS_CACHING CLUSTER BY ( MONTH(DATE) )
+
+--------------------------------------------------------
+-- COPY INTO TABLE FROM local internal stage -- 
+
+CREATE TABLE expense_db.expense_schema.EXPENSE_TAB (TR_DATE DATE, AMOUNT NUMBER, PAY_TYPE VARCHAR(20), DESC VARCHAR(30));
+
+put file:///home/snowflake/data/fy22*.csv @EXPENSE_DB.EXPENSE_SCHEMA.%EXPENSE_TAB;
+
+COPY INTO EXPENSE_DB.EXPENSE_SCHEMA.EXPENSE_TAB 
+FROM @EXPENSE_DB.EXPENSE_SCHEMA.%EXPENSE_TAB
+FILE_FORMAT = (TYPE = CSV FIELD_DELIMITER = '|')
+ON_ERROR = 'CONTINUE';
+
+--------------------------------------------------------
+// how to remove stage files from stage 
+
+// alter table column datatype
+REMOVE FROM @{stage}
+    [PATTERN = 'pattern' | PATTERNS = ('pattern1', 'pattern2', ...)
+    [, FORCE = {TRUE | FALSE}]
+    [, RECURSIVE = {TRUE | FALSE}];
+
+// See storage integration properties to fetch external_id so we can update it in S3
+DESC integration s3_int;
+
+--------------------------------------------------------
+-- CLONE DATABASE --
+-- as ACCOUNTADMIN:
+
+CREATE DATABASE EXPENSE_DB_CLONE CLONE EXPENSE_DB;
+
+--------------------------------------------------------
+-- AWS INTEGRATION -- 
+
+-- create a bucket in s3 in the same region as snowflake so that data migration or data copy from S3 to snowflake is free. 
+-- different region would lead to extra costs 
+-- upload datafile to s3 bucket 
+-- the connection b/w snowflake and AWS is done through IAM role
+-- IAM is used to grant permissions to AWS entities 
+-- use AWS account ID to create IAM role for AWS account (dummy value for external ID for now)
+-- permissions: AMAZONS3FULLACCESS and give role name 
+-- to modify the external ID, you can make the change in 'edit trust relationship
+-- next steps involve creating a connection on snowflake and would have to later update the trust policy on S3
+-- create integration object 
+-- integration object needs to be created using accountadmin role or a role with gloabl CREATE INTEGRATION priv 
+
+// Create storage integration object
+
+create or replace storage integration s3_int
+  TYPE = EXTERNAL_STAGE
+  STORAGE_PROVIDER = S3
+  ENABLED = TRUE 
+  STORAGE_AWS_ROLE_ARN = '<ARN from IAM,role in AWS>'
+  STORAGE_ALLOWED_LOCATIONS = ('s3://<your-bucket-name>/<your-path>/', 's3://<your-bucket-name>/<your-path>/')
+   COMMENT = 'This an optional comment' 
+   
+// add external ID that got created with storage integration object to s3 bucket 
+
+DESC integration s3_int;
+
+-- take the auto generated storage AWS external ID (row 7) and IAM_USER_ARN number (row 5) from desc command and paste in the edit trust relationship page in IAM on AWS (PRINCIPAL for ARN and condition for externalid)
+-- integration b/w snowflake and AWS is successful
+-- to load or unload data from or to a stage with storage integration, a user must have USAGE on Stage only (not necessary to have usage on integration object)
+
+// HANDLING JSON DATA: 
+-- in the datafile, if date is in integer format, use DATE($1:<COLUMN_NAME>::int)
+-- if the date is in string format, use DATE_FROM_PARTS() function in CASE statement
+
+// storage integration for GCP, AZURE and Linux
+
+--------------------------------------------------------
+-- SNOWPIPE -- 
+
+-- loads data once source data file appears in the bucket 
+-- used to perform immediate analysis 
+-- snowpipe is a server less feature: instead of using the user's compute warehouse, snowflake manages the compute for snowpipe 
+-- integration objects need to be created for snowpipe to hold credentials and access information from snowflake to AWS account
+-- FIELD_OPTIONALLY_ENCLOSED_BY = '"'; this is a text qualifier; it means if commas are within "", then consider whole enclosure "<everthing>" as a string entry for one column 
+-- high level steps: CREATE STAGE > TEST COPY COMMANDS > CREATE PIPE > S3 NOTIFICATION 
+-- once a file is added into the s3 bucket, it takes about 30 - 60 seconds (file to data in database - xlarge) to send notification, run snowpipe's copy command and reflect in the database.
+-- snowpipe only works on external stages? 
+-- snwopipes can be created and managed using accountadmin role only?
+
+// SETTING UP SNOWPIPE
+
+CREATE DATABASE UDEMY_DB;
+CREATE SCHEMA UDEMY_DB.PIPE_SCH;
+CREATE SCHEMA UDEMY_DB.FILE_FORMAT_SCH;
+CREATE SCHEMA UDEMY_DB.STAGE_SCH;
+
+CREATE STORAGE INTEGRATION S3_INT
+TYPE = EXTERNAL_STAGE
+STORAGE_PROVIDER = S3
+ENABLED = TRUE
+STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::152203810684:role/snowflake_pipe_aws'
+STORAGE_ALLOWED_LOCATIONS = ('s3://snowflake01/csv/')
+COMMENT = 'THIS IS INTEGRATION OBJECT FOR SNOWPIPE';
+
+DESC INTEGRATION S3_INT;
+
+//COPY AND PASTE THE EXTERNAL_ID AND IAM_USER_ARN IN TRUSTED RELATIONSHIPS
+
+CREATE OR REPLACE TABLE UDEMY_DB.PUBLIC.EMPLOYEES (
+ id INT,
+  first_name STRING,
+  last_name STRING,
+  email STRING,
+  location STRING,
+  department STRING
+);
+
+CREATE OR REPLACE FILE FORMAT UDEMY_DB.FILE_FORMAT_SCH.UDEMY_FF
+TYPE = CSV
+FIELD_DELIMITER = ','
+SKIP_HEADER = 1
+FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+NULL_IF = ('NULL', 'null')
+EMPTY_FIELD_AS_NULL = TRUE;
+
+DESC FILE FORMAT UDEMY_DB.FILE_FORMAT_SCH.UDEMY_FF;
+
+CREATE OR REPLACE STAGE UDEMY_DB.STAGE_SCH.UDEMY_PIPE_STAGE
+FILE_FORMAT = UDEMY_DB.FILE_FORMAT_SCH.UDEMY_FF
+STORAGE_INTEGRATION = S3_INT
+URL = 's3://snowflake01/csv/';
+
+LIST @UDEMY_DB.STAGE_SCH.UDEMY_PIPE_STAGE;
+
+CREATE OR REPLACE PIPE UDEMY_DB.PIPE_SCH.UDEMY_PIPE_EMP
+AUTO_INGEST = TRUE
+AS
+COPY INTO UDEMY_DB.PUBLIC.EMPLOYEES
+FROM @UDEMY_DB.STAGE_SCH.UDEMY_PIPE_STAGE
+ON_ERROR = 'CONTINUE';
+
+DESC PIPE UDEMY_DB.PIPE_SCH.UDEMY_PIPE_EMP;
+
+// COPY AND PASTE THE NOTIFICATION_CHANNEL VALUE IN THE EVENT NOTITICATION FOR S3 BUCKET FOLDER (SQS QUEUE DESTINATION)
+//UPLOAD FILE TO S3 BUCKET AND WAIT ABOUT 3 MIN TO EXECUTE (X-SMALL)
+
+SELECT COUNT(*) FROM UDEMY_DB.PUBLIC.EMPLOYEES;
+
+-- Suspend the pipe
+ALTER PIPE UDEMY_DB.PIPE_SCH.UDEMY_PIPE_EMP SUSPEND;
+
+-- Resume the pipe
+ALTER PIPE UDEMY_DB.PIPE_SCH.UDEMY_PIPE_EMP RESUME;
+
+--------------------------------------------------------
+-- SNOWPIPE ERROR HANDLING -- 
+
+Q: SELECT * FROM TABLE()?????
+
+// REFRESH SNOWPIPE 
+ALTER PIPE UDEMY_DB.PIPE_SCH.UDEMY_PIPE_EMP REFRESH;
+
+// PIPE STATUS
+SELECT SYSTEM$PIPE_STATUS('UDEMY_DB.PIPE_SCH.UDEMY_PIPE_EMP');
+
+// SNOWFLAKE ERROR MESSAGE
+
+
+--------------------------------------------------------
+-- MERGE DML COMMAND -- 
+
+MERGE INTO target_table t
+USING source_table s
+ON t.id = s.id
+WHEN MATCHED THEN
+  UPDATE SET t.column1 = s.column1, t.column2 = s.column2
+WHEN NOT MATCHED THEN
+  INSERT (t.id, t.column1, t.column2) VALUES (s.id, s.column1, s.column2)
+  
+-- This example merges data from the source_table into the target_table.
+--  If a row with the same id value exists in both tables, it updates the values in the target_table with the values from the source_table. 
+-- If a row with the same id value exists only in the source_table, it inserts a new row in the target_table with the values from the source_table.
+-- merge is the same as insert + update DML command in other databases 
+
+--------------------------------------------------------
+-- SWAP DML COMMAND -- 
+
+SWAP TABLE table1 WITH TABLE table2;
+
+-- This example swaps the contents of table1 and table2. 
+-- The structure and metadata of the tables are not changed, only the data is exchanged. 
+-- The SWAP command is atomic, which means that it is executed as a single unit of work and either completes in its entirety or is rolled back if an error occurs.
+-- Note that the SWAP command is only available in Snowflake. It is not a standard SQL command.
+
+--------------------------------------------------------
+-- QUERY_HISTORY -- 
+
+// from ACCOUNT_USAGE database:
+SELECT * FROM ACCOUNT_USAGE.QUERY_HISTORY;
+
+// CHANGE/ALTER QUERY HISTORY RETENTION TIME:
+ALTER WAREHOUSE SET QUERY_HISTORY_RETENTION_TIME_IN_DAYS = 7;
+
+-- default is 90 days, min 1 day, max no limit (but 1 year?)
+-- storing the query history for a longer period of time will increase the size of the ACCOUNT_USAGE database, which may have an impact on performance and storage costs.
+
+--------------------------------------------------------
+-- SNOWFLAKE SHORT DESCRIPTION -- 
+
+snowflake is a multi-cluster, shared-data database. This means that it uses multiple clusters to store and process data, and the data is shared among these clusters.
+
+In Snowflake, data is stored in tables and organized into databases. Each database is associated with a single virtual warehouse, which is a logical construct that represents the compute resources used to query and process the data. A virtual warehouse consists of one or more clusters, which are groups of compute resources (such as virtual machines or containers) that work together to execute queries and perform other tasks.
+
+Each cluster in a virtual warehouse is responsible for a portion of the data in the associated database. When a query is run against a database, the virtual warehouse distributes the query to the appropriate clusters and aggregates the results. This allows Snowflake to scale the compute resources elastically and in parallel, based on the needs of the workload.
+
+Overall, Snowflake's architecture is designed to provide scalable and flexible data storage and processing capabilities in the cloud. It allows users to store and query large volumes of data efficiently, and to scale the compute resources as needed to meet the performance requirements of their workloads.
+
+--------------------------------------------------------
+-- COMMANDS THAT BLOCK OR DONT BLOCK OPERATIONS -- 
+
+// Commands that can block operations in Snowflake include:
+
+CREATE TABLE AS SELECT (CTAS): This command creates a new table by selecting and transforming data from one or more existing tables. CTAS can block operations because it acquires an exclusive lock on the source table(s) for the duration of the query.
+
+ALTER TABLE: This command modifies the structure of an existing table. ALTER TABLE can block operations because it acquires a lock on the table being modified.
+
+COPY INTO: This command loads data into a table from a file stored in a stage. COPY INTO can block operations because it acquires a lock on the target table for the duration of the load.
+
+// Commands that do not block operations in Snowflake include:
+
+SELECT: This command retrieves data from one or more tables. SELECT does not block operations because it does not acquire locks on the tables being queried.
+
+INSERT: This command adds rows to a table. INSERT does not block operations because it does not acquire locks on the table being modified.
+
+UPDATE: This command modifies data in a table. UPDATE does not block operations because it does not acquire locks on the table being modified.
+
+--------------------------------------------------------
+-- SNOWPIPE REST API  -- 
+
+// Snowflake offers the following APIs:
+
+SQL API: Allows you to execute SQL statements and queries, and retrieve the results, using HTTP requests.
+Data Loading API: Allows you to load data into Snowflake using HTTP requests.
+Data Export API: Allows you to export data from Snowflake using HTTP requests.
+Account Management API: Allows you to manage Snowflake accounts, users, and roles using HTTP requests.
+Performance Monitoring API: Allows you to monitor the performance of your Snowflake account using HTTP requests.
+
+-- Snowpipe is a feature of Snowflake that allows you to automatically load data into a table from a file stored in an external location, such as Amazon S3 or Google Cloud Storage.
+-- Snowpipe uses the REST API to poll for new files and load them into Snowflake.
+-- To use Snowpipe, you will need to create a named stage and a pipe that defines the source location, file format, and target table for the data.
+-- You can use the Data Loading API to create and configure Snowpipe, as well as to load data into Snowflake.
+-- You can use the Data Export API to retrieve the results of a Snowpipe load.
+-- You can use the Account Management API to manage Snowpipe, including enabling, disabling, and listing pipes.
+-- Snowpipe has a number of limitations and restrictions, such as the maximum file ze and the number of files that can be loaded simultaneously. Be sure to familiarize yourself with these limitations to ensure that Snowpipe is suitable for your use case.
+-- Snowpipe supports a variety of file formats, including CSV, JSON, Avro, and Parquet. You can choose the file format that best suits your needs.
+-- Snowpipe can be configured to automatically delete files from the source location after they have been successfully loaded into Snowflake. This can help to minimize storage costs and reduce clutter.
+   
+--------------------------------------------------------
+-- EXPLAIN / EXPLAIN PLAN  -- 
+
+EXPLAIN SELECT * FROM my_table WHERE col1 = 'value1';
+
+// more info than explain 
+EXPLAIN PLAN FOR SELECT * FROM my_table WHERE col1 = 'value1';
+
+--------------------------------------------------------
+-- SCHEDULED TASKS  -- 
+
+-- tasks are objects that store SQL statements that can be executed at a specific time or interval 
+-- one task can hold one SQL statement 
+-- can create standalone tasks and trees of tasks 
+-- by default, once a new task is created, it'll be in suspended mode until resumed
+
+// CREATING A TRANSIENT DATABASE 
+CREATE OR REPLACE TRANSIENT DATABASE test_transdb;
+
+// Prepare table
+CREATE OR REPLACE TABLE CUSTOMERS_AUTO_INCR (
+    CUSTOMER_ID INT AUTOINCREMENT START = 1 INCREMENT =1,
+    FIRST_NAME VARCHAR(40) DEFAULT 'NIKHI',
+    CREATE_DATE DATE);
+        
+// Create task
+CREATE OR REPLACE TASK CUSTOMERS_INSERT_TASK
+    WAREHOUSE = EXP_WH
+    SCHEDULE = '1 MINUTE'
+    AS 
+    INSERT INTO CUSTOMERS_AUTO_INCR(CREATE_DATE) VALUES(CURRENT_TIMESTAMP);
+    
+SHOW TASKS;
+
+// Task starting and suspending
+ALTER TASK CUSTOMERS_INSERT_TASK RESUME;
+ALTER TASK CUSTOMERS_INSERT_TASK SUSPEND;
+
+SELECT * FROM CUSTOMERS_AUTO_INCR;
+
+// CREATING TASK USING CRON AND TIMEZONE
+
+CREATE OR REPLACE TASK CUSTOMER_INSERT
+    WAREHOUSE = COMPUTE_WH
+    SCHEDULE = 'USING CRON 0 7,10 * * 5L America/Los_Angeles'
+    AS 
+    INSERT INTO CUSTOMERS(CREATE_DATE) VALUES(CURRENT_TIMESTAMP);
+    
+CREATE OR REPLACE TASK CUSTOMER_INSERT
+    WAREHOUSE = COMPUTE_WH
+    SCHEDULE = 'USING CRON 0 7,10 * * 5L '
+    AS 
+    INSERT INTO CUSTOMERS(CREATE_DATE) VALUES(CURRENT_TIMESTAMP);
+
+-- the cron schedule for the tasks is set in the 'SCHEDULE' parameter for the task
+-- you can have multiple values in each position in cron using ','
+-- you can also specify the timezone for the task at the end
+-- 5L means 'last friday (5) of the month'
+
+// cron order
+# __________ minute (0-59)
+# | ________ hour (0-23)
+# | | ______ day of month (1-31, or L)
+# | | | ____ month (1-12, JAN-DEC)
+# | | | | __ day of week (0-6, SUN-SAT, or L)
+# | | | | |
+# | | | | |
+# * * * * *
+
+// TREES OF TASKS 
+-- root task > Task A, Task B (Parent Task) >> Task C, D, E, and so on 
+-- one parent task can have multiple child tasks, but every child task has only 1 parent task 
+-- you can create a tree with upto 1000 tasks, so almost unlimited 
+-- a single task can have a max of 100 predecessors and 100 child tasks
+-- you can create or alter existing tasks with parent task specified 
+
+--------------------------------------------------------
+-- CREATE NEW USER -- 
+create user adarsh password='adarsh95$P' DEFAULT_ROLE=read_role default_warehouse=exp_wh;
+
+--------------------------------------------------------
+-- DATA MASKING-- MASKING POLICY -- DAD NOTES -- COLUMN LEVEL SECURITY -- 
+
+adarsh#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>SELECT CURRENT_ROLE();
++----------------+                                                              
+| CURRENT_ROLE() |
+|----------------|
+| READ_ROLE      |
++----------------+
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>grant usage on database EXPENSE_DB to role READ_ROLE;
++----------------------------------+                                            
+| status                           |
+|----------------------------------|
+| Statement executed successfully. |
++----------------------------------+
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>grant select on all tables in schema EXPENSE_DB.EXPENSE_SCHEMA to role READ_ROLE;
++-------------------------------------------------------+                       
+| status                                                |
+|-------------------------------------------------------|
+| Statement executed successfully. 11 objects affected. |
++-------------------------------------------------------+
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>grant usage on warehouse EXP_WH to role READ_ROLE;
++----------------------------------+                                            
+| status                           |
+|----------------------------------|
+| Statement executed successfully. |
++----------------------------------+
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>grant select on view EXPENSE_DB.EXPENSE_SCHEMA.EXPENSE_TAB_VIEW TO ROLE READ_ROLE;
++----------------------------------+                                            
+| status                           |
+|----------------------------------|
+| Statement executed successfully. |
++----------------------------------+
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>GRANT USAGE ON ALL SCHEMAS IN DATABASE EXPENSE_DB TO ROLE READ_ROLE;
++------------------------------------------------------+                        
+| status                                               |
+|------------------------------------------------------|
+| Statement executed successfully. 2 objects affected. |
++------------------------------------------------------+
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>SELECT CURRENT_ROLE();
++----------------+                                                              
+| CURRENT_ROLE() |
+|----------------|
+| EXPENSE_ROLE   |
++----------------+
+
+create role DATA_MASK_ROLE;
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>grant create MASKING policy on schema expense_db.EXPENSE_SCHEMA TO ROLE DATA_MASK_ROLE;
++----------------------------------+                                            
+| status                           |
+|----------------------------------|
+| Statement executed successfully. |
++----------------------------------+
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>GRANT APPLY MASKING POLICY ON ACCOUNT TO ROLE DATA_MASK_ROLE;
++----------------------------------+                                            
+| status                           |
+|----------------------------------|
+| Statement executed successfully. |
++----------------------------------+
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>GRANT ROLE DATA_MASK_ROLE TO ROLE EXPENSE_ROLE;
++----------------------------------+                                            
+| status                           |
+|----------------------------------|
+| Statement executed successfully. |
++----------------------------------+
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>
+CREATE OR REPLACE MASKING POLICY PAY_TYPE_MASK AS (VAL NUMBER) RETURNS NUMBER ->
+CASE 
+WHEN CURRENT_ROLE() IN ('EXPENSE_ROLE') THEN VAL
+ELSE 
+9999999
+END;/
+            
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>
+ALTER VIEW EXPENSE_TAB_VIEW MODIFY COLUMN PAY_AMOUNT SET MASKING POLICY PAY_TYPE_MASK;
++----------------------------------+                                            
+| status                           |
+|----------------------------------|
+| Statement executed successfully. |
++----------------------------------+                                  
+
+adarsh#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>SELECT * FROM EXPENSE_TAB_VIEW;
++-------------------+------------+                                              
+| PAY_TYPE          | PAY_AMOUNT |
+|-------------------+------------|
+| ICICI Bank        |    9999999 |
+| HDFC Card         |    9999999 |
+| Cash              |    9999999 |
+| SBI Bank          |    9999999 |
+| HDFC Bank         |    9999999 |
+| IDFC CR Card      |    9999999 |
+| ICICI Credit Card |    9999999 |
+| GPAY              |    9999999 |
++-------------------+------------+
+
+-- to unset masking policy 
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>
+alter view EXPENSE_TAB_VIEW modify column pay_amount unset masking POLICY;
++----------------------------------+                                            
+| status                           |
+|----------------------------------|
+| Statement executed successfully. |
++----------------------------------+
+
+-------------------------------------------------
+-- DATA MASKING -- ROW ACCESS POLICY -- DAD NOTES
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>SELECT * FROM CHECK_USER_TAB;
++--------+---------+--------+                                                   
+| NAME   | ROLE    | DEPTNO |
+|--------+---------+--------|
+| NIKHI  | DEPT_20 |     20 |
+| ADARSH | DEPT_10 |     10 |
++--------+---------+--------+
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>SELECT * FROM EMP;
++-------+--------+-----------+------+------------+---------+---------+--------+ 
+| EMPNO | ENAME  | JOB       |  MGR | HIREDATE   |     SAL |    COMM | DEPTNO |
+|-------+--------+-----------+------+------------+---------+---------+--------|
+|  7839 | KING   | PRESIDENT | NULL | 17/11/1981 | 5000.00 |    NULL |     10 |
+|  7698 | BLAKE  | MANAGER   | 7839 | 01/05/1981 | 2850.00 |    NULL |     30 |
+|  7782 | CLARK  | MANAGER   | 7839 | 09/06/1981 | 2450.00 |    NULL |     10 |
+|  7566 | JONES  | MANAGER   | 7839 | 02/04/1981 | 2975.00 |    NULL |     20 |
+|  7902 | FORD   | ANALYST   | 7566 | 03/12/1981 | 3000.00 |    NULL |     20 |
+|  7369 | SMITH  | CLERK     | 7902 | 17/12/1980 |  800.00 |    NULL |     20 |
+|  7499 | ALLEN  | SALESMAN  | 7698 | 20/02/1981 | 1600.00 |  300.00 |     30 |
+|  7521 | WARD   | SALESMAN  | 7698 | 22/02/1981 | 1250.00 |  500.00 |     30 |
+|  7654 | MARTIN | SALESMAN  | 7698 | 28/09/1981 | 1250.00 | 1400.00 |     30 |
+|  7844 | TURNER | SALESMAN  | 7698 | 08/09/1981 | 1500.00 |    0.00 |     30 |
+|  7900 | JAMES  | CLERK     | 7698 | 03/12/1981 |  950.00 |    NULL |     30 |
+|  7934 | MILLER | CLERK     | 7782 | 23/01/1982 | 1300.00 |    NULL |     10 |
++-------+--------+-----------+------+------------+---------+---------+--------+
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>grant usage on database EXPENSE_DB to role DEPT_10;
++----------------------------------+                                            
+| status                           |
+|----------------------------------|
+| Statement executed successfully. |
++----------------------------------+
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>grant usage on schema EXPENSE_DB.EXPENSE_SCHEMA TO ROLE DEPT_10;
++----------------------------------+                                            
+| status                           |
+|----------------------------------|
+| Statement executed successfully. |
++----------------------------------+
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>GRANT SELECT ON TABLE EMP TO ROLE DEPT_10;
++----------------------------------+                                            
+| status                           |
+|----------------------------------|
+| Statement executed successfully. |
++----------------------------------+
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>GRANT ROLE DEPT_10 TO USER ADARSH;
++----------------------------------+                                            
+| status                           |
+|----------------------------------|
+| Statement executed successfully. |
++----------------------------------+
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>
+CREATE OR REPLACE ROW ACCESS POLICY EMP_DEPT_POLICY AS (VAL NUMBER) RETURNS BOOLEAN ->
+EXISTS (SELECT 1 FROM CHECK_USER_TAB WHERE DEPTNO = VAL AND ROLE = CURRENT_ROLE()) 
+;
++--------------------------------------------------------------+                
+| status                                                       |
+|--------------------------------------------------------------|
+| Row access policy 'EMP_DEPT_POLICY' is successfully created. |
++--------------------------------------------------------------+
+
+adarsh#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>USE ROLE DEPT_10;
++----------------------------------+                                            
+| status                           |
+|----------------------------------|
+| Statement executed successfully. |
++----------------------------------+
+
+adarsh#(no warehouse)@EXPENSE_DB.EXPENSE_SCHEMA>SELECT * FROM EMP;
++-------+--------+-----------+-----+------------+------------+------+--------+  
+| EMPNO | ENAME  | JOB       | MGR | HIREDATE   |        SAL | COMM | DEPTNO |
+|-------+--------+-----------+-----+------------+------------+------+--------|
+|  7839 | KING   | PRESIDENT | NULL | 17/11/1981 | 9999999.00 | NULL |     10 |
+|  7782 | CLARK  | MANAGER   | NULL | 09/06/1981 | 9999999.00 | NULL |     10 |
+|  7934 | MILLER | CLERK     | NULL | 23/01/1982 | 9999999.00 | NULL |     10 |
++-------+--------+-----------+-----+------------+------------+------+--------+
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>alter table EXPENSE_TAB cluster by (PAY_TYPE);
++----------------------------------+                                            
+| status                           |
+|----------------------------------|
+| Statement executed successfully. |
++----------------------------------+
+
+expense_user#EXP_WH@EXPENSE_DB.EXPENSE_SCHEMA>alter table EXPENSE_TAB drop CLUSTERING key;
++----------------------------------+                                            
+| status                           |
+|----------------------------------|
+| Statement executed successfully. |
++----------------------------------+
+1 Row(s) produced. Time Elapsed: 0.126s
+
+
+
+[snowflake@nikhivm python]$ cat validate_snow_conn.py
+#!/bin/python3
+#
+import snowflake.connector
+
+# Gets the version
+ctx = snowflake.connector.connect(
+    user='expense_user',
+    password='adarsh95$P',
+    account='fgzgvdz-of07138'
+    )
+cs = ctx.cursor()
+try:
+    cs.execute("SELECT current_version()")
+    one_row = cs.fetchone()
+    print(one_row[0])
+finally:
+    cs.close()
+ctx.close()
+
+
+--------------------------------------------------------
+-- CREATE SEQUENCES AND AUTO INCREMENT -- 
+
+create or replace sequence auto_seq;
+desc sequence auto_seq;
+
+create table test2 (
+id int default auto_seq.nextval,
+    ins_dt date
+);
+
+insert into test1(id, ins_dt) values (10,current_timestamp());
+
+select * from test1;
+
+create or replace sequence auto_seq2 start=1 increment=5;
+
+select auto_seq2.nextval a, auto_seq2.nextval b, auto_seq2.nextval c;
+
+NOTE:
+-- modifying a column to add a names sequence is not supported. Table or view has to be recreated 
+
+--------------------------------------------------------
+-- DIRECTORY TABLES -- 
+
+create stage test_stage 
+FILE_FORMAT = (FORMAT_NAME = 'AWS_S3_FF');
+
+desc stage TEST_STAGE;
+
+alter stage TEST_STAGE set DIRECTORY=(enable = true);
+-- note: auto_refresh flag must be 'true' for auto refreshing
+
+select * from DIRECTORY(@TEST_STAGE);
+
+// FUNCTION FOR GETTING FILE_URL FROM DIRECTORY TABLE:
+BUILD_STAGE_FILE_URL( @<stage_name> , '<relative_file_path>' )
+
+// MANUAL REFRESH:
+alter stage mystage refresh;
+
+// GETTING FILE URL:
+select file_url from directory(@mystage) where relative_path ilike '%.csv';
+
+// REFRESH HISTORY:
+
+-- history for a 30 minute range, in 5 minute periods
+select *
+  from table(information_schema.auto_refresh_registration_history(
+    date_range_start=>to_timestamp_tz('2021-06-17 12:00:00.000 -0700'),
+    date_range_end=>to_timestamp_tz('2021-06-17 12:30:00.000 -0700'),
+    object_type=>'external_table'));
+    
+-- billing history for the last 14 days, in 1 day/hour periods
+select *
+  from table(information_schema.auto_refresh_registration_history(
+    date_range_start=>dateadd('<'day' or 'hour'>',-14,current_date()),
+    date_range_end=>current_date(),
+    object_type=>'external_table'));
+
+NOTE: SETTING UP FOR REFRESHING IN AWS IS A STEP BY STEP PROCESS IN OFFICIAL DOCUMENTATION
+
+--------------------------------------------------------
+-- FILE FUNCTIONS -- 
+
+-- LIST OF FUCNTIONS:
+GET_STAGE_LOCATION
+Returns the URL for an external or internal named stage using the stage name as the input.
+
+GET_RELATIVE_PATH
+Extracts the path of a staged file relative to its location in the stage using the stage name and absolute file path in cloud storage as inputs.
+
+GET_ABSOLUTE_PATH
+Returns the absolute path of a staged file using the stage name and path of the file relative to its location in the stage as inputs.
+
+GET_PRESIGNED_URL
+Generates the pre-signed URL to a staged file using the stage name and relative file path as inputs. Access files in an external stage using the function.
+
+BUILD_SCOPED_FILE_URL
+Generates a scoped Snowflake-hosted URL to a staged file using the stage name and relative file path as inputs.
+
+BUILD_STAGE_FILE_URL
+Generates a Snowflake-hosted file URL to a staged file using the stage name and relative file path as inputs.
+
+--------------------------------------------------------
+-- QUERY HISTORY | BY SESSION -- 
+
+select * from table(information_schema.query_history_by_session()) order by start_time;
+
+--------------------------------------------------------
+-- ADD NEW COLUMN TO TABLE -- 
+use role ACCOUNTADMIN;
+
+alter table CUSTOMERS add column create_date DATE;
+
+--------------------------------------------------------
+-- CALL AND CREATE STORED PROCEDURE -- TASKS FOR PROCEDURE -- 
+
+// Sample syntax: 
+
+// creating stored procedure 
+CREATE OR REPLACE PROCEDURE myprocedure()
+  RETURNS VARCHAR
+  LANGUAGE SQL
+  AS
+  $$
+    -- Snowflake Scripting code
+    DECLARE
+      radius_of_circle FLOAT;
+      area_of_circle FLOAT;
+    BEGIN
+      radius_of_circle := 3;
+      area_of_circle := pi() * radius_of_circle * radius_of_circle;
+      RETURN area_of_circle;
+    END;
+  $$
+  ;
+  
+// running a procedure in session in a block 
+EXECUTE IMMEDIATE $$
+-- Snowflake Scripting code
+DECLARE
+  radius_of_circle FLOAT;
+  area_of_circle FLOAT;
+BEGIN
+  radius_of_circle := 3;
+  area_of_circle := pi() * radius_of_circle * radius_of_circle;
+  RETURN area_of_circle;
+END;
+$$
+;
+
+// using session variable to run a procedure 
+set stmt =
+$$
+declare
+    radius_of_circle float;
+    area_of_circle float;
+begin
+    radius_of_circle := 3;
+    area_of_circle := pi() * radius_of_circle * radius_of_circle;
+    return area_of_circle;
+end;
+$$
+;
+
+execute immediate $stmt;
+  
+NOTE
+-- argument are CASE Sensitive in JS (javascript) based stored procedure 
+
+// CREATE STORED PROCEDURE LANGUAGE SQL:
+
+// PRIVS TO CREATE AND SUSPEND/RESUME TASK
+USE ROLE ACCOUNTADMIN;
+GRANT CREATE PROCEDURE ON SCHEMA UDEMY_SCH TO ROLE UDEMY_ROLE;
+GRANT CREATE TASK ON SCHEMA UDEMY_SCH TO ROLE UDEMY_ROLE; 
+GRANT EXECUTE TASK ON ACCOUNT TO ROLE UDEMY_ROLE; 
+
+CREATE PROCEDURE CUST_INSERT_SQL (INSERT_DATE VARCHAR)
+RETURNS STRING NOT NULL 
+AS 
+$$
+BEGIN
+    INSERT INTO CUSTOMERS (CREATE_DATE) VALUES (INSERT_DATE);
+    RETURN 'PROC RAN SMOOTHLY';
+END;
+$$
+;
+
+CREATE TASK CUST_INS_TASK
+WAREHOUSE =UDEMY_WH
+SCHEDULE ='2 MINUTES'
+AS 
+CALL CUST_INSERT_SQL (CURRENT_DATE);
+
+ALTER TASK CUST_INS_TASK RESUME;
+
+** PROCEDURE ERROR WITH SQL AND JAVASCRIPT ** TEST AGAIN **
+
+--------------------------------------------------------
+-- TASK HISTORY AND ERROR HANDLING -- 
+
+-- NOTE:
+-- if a procedure that is run from a task fails, the task status is "succedded" but procedure status is "failed"
+-- ONE TASK = ONE SQL STATEMENT / ONE PROCEDURE CALL 
+-- QUESTION: can tasks save task history data for upto 7 days only?
+
+// Use the table function "TASK_HISTORY()"
+select *
+  from table(information_schema.task_history())
+  order by scheduled_time desc;
+
+// See results for a specific Task for the last 4 hrs (hour/day) and limit results to <= 5
+select *
+from table(information_schema.task_history(
+    scheduled_time_range_start=>dateadd('day',-4,current_timestamp()),
+    result_limit => 5,
+    task_name=>'CUST_INS_TASK_JS'));
+
+// See results for a given time period / range
+select *
+  from table(information_schema.task_history(
+    scheduled_time_range_start=>to_timestamp_ltz('2023-03-02 12:45:39.495 -0800'),
+    scheduled_time_range_end=>to_timestamp_ltz('2023-03-01 12:45:39.495 -0800')));  
+
+
+select *
+  from table(information_schema.task_history(
+    scheduled_time_range_start=>to_timestamp_ltz('2023-03-02 12:45:39.495 -0800'),
+    scheduled_time_range_end=>dateadd('day',-4,current_timestamp())));  
+
+SELECT TO_TIMESTAMP_LTZ(CURRENT_TIMESTAMP) ;
+
+--------------------------------------------------------
+-- TASK WITH CONDITION -- 
+
+-- DISADVANTAGE: as of now, only one table function is supported as a condition for tasks and that is SYSTEM$STREAM_HAS_DATA.
+
+******* CHECK THIS CHAPTER OUT ********
+
+--------------------------------------------------------
+-- TIME TRAVEL -- ACCOUNT_USAGE -- 
+
+-- NOTE: DATA TYPE 'STRING' AND 'INT' ARE SAVED AS 'VARCHAR(16777216)' AND NUMBER(38,0)
+
+grant create file format on schema UDEMY_SCH to role UDEMY_ROLE;
+
+create file format ff_csv
+type=csv
+field_delimiter = ','
+skip_header = 1
+empty_field_as_null=true;
+
+CREATE OR REPLACE TABLE customers_ext_stg (
+id int,
+first_name string,
+last_name string,
+email string,
+gender string,
+Job string,
+Phone string);
+
+desc table customers_ext_stg;
+
+grant create stage on schema UDEMY_SCH to role UDEMY_ROLE;
+
+create stage udemy_db.udemy_sch.tt_stg 
+url= 's3://data-snowflake-fundamentals/time-travel/'
+file_format = udemy_db.udemy_sch.ff_csv;
+
+desc stage tt_stg;
+list @tt_stg;
+
+copy into customers_ext_stg 
+from 's3://data-snowflake-fundamentals/time-travel/'
+file_format = ff_csv;
+
+select count(*) from customers_ext_stg;
+update customers_ext_stg set first_name = 'oops';
+select * from customers_ext_stg limit 10;
+show parameters like '%DATA_RETENTION_TIME_IN_DAYS%';
+
+// time travel to n seconds ago
+select * from customers_ext_stg at (offset => -60*5);
+// tt to before timestamp 
+select current_timestamp();
+select * from customers_ext_stg before (timestamp => '2023-03-06 16:00:00.000'::timestamp_tz) limit 10;
+select * from customers_ext_stg before (timestamp => '2023-03-06 16:00:00.000 -0800') limit 10; -- did not work 
+// time travel to before statement or query_ID
+select * from table(information_schema.query_history());
+//01aac65b-0001-0072-0003-993a000328c6 query_id that changed first_name to 'oops'
+select * from customers_ext_stg before (statement=> '01aac65b-0001-0072-0003-993a000328c6') limit 1;
+
+// to restore data back to the original data, DO NOT CREATE or REPLACE as that will delete the metadata needed to time travel, so instead truncate and load data from before a timestamp or query_id 
+select * from customers_ext_stg limit 10;
+truncate table customers_ext_stg;
+insert into customers_ext_stg 
+select * from customers_ext_stg before (statement=> '01aac65b-0001-0072-0003-993a000328c6');
+
+// if you do create and replace, then use undrop table to bring the table back. 'Order is confusing though'
+select last_query_id();
+select * from customers_ext_stg before (statement=> '01aacac1-0001-0125-0003-993a0003b612') limit 10;
+create or replace table customers_ext_stg as select * from customers_ext_stg before (statement=> '01aacac1-0001-0125-0003-993a0003b612');
+select * from customers_ext_stg limit 10;
+undrop table customers_ext_stg;
+alter table customers_ext_stg rename to customers_ext_stg_test;
+select * from customers_ext_stg_test limit 10;
+
+// changing retention period
+alter table customers_ext_stg_test set data_retention_time_in_days = 2;
+show tables;
+create table customers_ext_stg_test_2 (name string) 
+data_retention_time_in_days = 3;
+
+// storage costs for time travel 
+// find priv to view account_usage 
+use role accountadmin;
+SELECT * FROM SNOWFLAKE.ACCOUNT_USAGE.STORAGE_USAGE; 
+show grants to role udemy_role;
+// these three did not work --
+grant usage on schema SNOWFLAKE.ACCOUNT_USAGE to role udemy_role;
+grant select on view SNOWFLAKE.ACCOUNT_USAGE.ACCESS_HISTORY to role udemy_role;
+grant select on view SNOWFLAKE.ACCOUNT_USAGE.STORAGE_USAGE to role udemy_role;
+---
+use role udemy_role;
+SELECT 	ID, 
+		TABLE_NAME, 
+		TABLE_SCHEMA,
+        TABLE_CATALOG,
+		ACTIVE_BYTES / (1024*1024*1024) AS STORAGE_USED_GB,
+		TIME_TRAVEL_BYTES / (1024*1024*1024) AS TIME_TRAVEL_STORAGE_USED_GB
+FROM SNOWFLAKE.ACCOUNT_USAGE.TABLE_STORAGE_METRICS
+ORDER BY STORAGE_USED_GB DESC,TIME_TRAVEL_STORAGE_USED_GB DESC;
+
+--------------------------------------------------------
+-- TYPES OF TABLES -- 
+
+- PERMANENT 
+    - TIME TRAVEL : RETENTION 0-90 DAYS : DEFAULT 1 DAY
+    - FAIL SAFE : 7 DAYS
+    - RETAINED UNTIL DROPPED 
+    - USES: 
+        - DEFAULT 
+        - TO PROTECT PERMANENT DATA 
+    - SNOWFLAKE.ACCOUNT_USAGE.TABLE_STORAGE_METRICS -> 'IS_TRANSIENT' COLUMN WILL BE NO 
+- TRANSIENT 
+    - TIME TRAVEL ONLY : RETENTION 0-1 DAYS
+    - RETAINED UNTIL DROPPED
+    - USES: 
+        - LARGE AMOUNT OF DATA 
+        - DOES NOT NEED PROTECTION 
+        - KEEPS DATA STORAGE COSTS LOW
+     - SNOWFLAKE.ACCOUNT_USAGE.TABLE_STORAGE_METRICS -> 'IS_TRANSIENT' COLUMN WILL BE YES
+        - FAILSAFE_STORAGE : 0
+- TEMPORARY 
+    - TIME TRAVEL ONLY : RETENTION 0-1 DAYS
+    - RETAINED ONLY IN SESSION / WORKSHEET AND DROPPED AFTER CLOSING THE SESSION / WORKSHEET 
+    - USES: 
+        - USED FOR NON-PERMANENT DATA THAT IS USED ONLY WITHIN THE SESSION AND THEN DELETED AFTERWARDS
+        - IF YOU NAME A TEMP TABLE SAME AS PERMANENT OR TRANSIENT TABLE, THE ORIGINAL TABLE WILL BE HIDDEN IN THE SESSION AND THE TEMP TABLE WILL BE VISIBLE WHEN QUERIED. 
+            - EG: TEMP TABLE -> EMP; TABLE -> EMP; 'SELECT * FROM EMP' RETURNS FROM TEMP TABLE
+    - SNOWFLAKE.ACCOUNT_USAGE.TABLE_STORAGE_METRICS -> 'IS_TRANSIENT' COLUMN WILL BE YES
+        - - FAILSAFE_STORAGE : 0
+    
+- THESE TYPES APPLY TO DB OBJECTS LIKE DATABASES, SCHEMAS, ETC.
+
+// to verify if databases are permanent 
+- SHOW DATABASES -> 'OPTIONS' COLUMN WILL BE NULL FOR PERM TABLES
+// to verify if a table is transient or not
+select * from snowflake.account_usage.table_storage_metrics;
+
+--------------------------------------------------------
+-- ZERO COPY CLONE -- 
+
+//data as of 2 hrs ago 
+create table EXPENSE_TAB_clone clone expense_tab at (offset => -60*60*2);
+
+NOTE: 
+-- OBJECTS THAT YOU CAN CLONE: 
+    -- DATABASES, SCHEMAS, TABLES: PERMANENT AND TRANSIENT ONLY 
+-- TEMPORARY TABLES CAN BE CLONED TO TEMPORARY TABLES 
+
+USE ROLE UDEMY_ROLE;
+SHOW TABLES;
+CREATE TABLE CUSTOMERS_CLONE CLONE CUSTOMERS;
+USE ROLE ACCOUNTADMIN;
+SHOW SCHEMAS;
+CREATE SCHEMA UDEMY_SCH_CLONE CLONE UDEMY_SCH;
+SHOW DATABASES;
+CREATE DATABASE UDEMY_DB_CLONE CLONE UDEMY_DB;
+
+--------------------------------------------------------
+-- DATA SAMPLING -- 
+
+show tables;
+use role accountadmin;
+grant create database on schema udemy_sch to role udemy_role;
+show schemas;
+show databases;
+// note: you cannot grant create db priv on a schema object, but rather should do it on account or db object
+grant create database on account to role udemy_role;
+use role udemy_role;
+create database sampling_db;
+use database sampling_db;
+create schema sampling_sch;
+
+// creating data sampling view [row / bernoulli method] as 1% sample size
+create view sampling_cust_v as select * from udemy_db.udemy_sch.customers sample row(1) seed (25);
+show views;
+select count(*) from sampling_cust_v; --5386
+select count(*) from udemy_db.udemy_sch.customers; --527232
+desc view sampling_cust_v;
+select city, count(*) from sampling_cust_v group by 1 order by 1;
+select "city", count(*) as sample_count from sampling_cust_v group by 1 order by 1;
+// percentage of each city in the sample
+select "city", (count(*)/5386)*100 as percentage from sampling_cust_v group by 1 order by 1;
+// null: 27.3487
+// verifying % of each city from full table 
+select "city", (count(*)/527232)*100 as percentage from udemy_db.udemy_sch.customers group by 1 order by 1;
+// null: 27.1668 -- very close
+show tables like '%cust%';
+select get_ddl('table', 'udemy_db.udemy_sch.customers');
+select get_ddl('view', 'sampling_cust_v');
+
+// creating data sampling view [system / block method] as 1% sample size [note: faster than row method]
+create view sampling_cust_v_2 as select * from udemy_db.udemy_sch.customers sample system(1) seed (30);
+select count(*) from sampling_cust_v_2;
+select "city", (count(*)/5266)*100 as percentage from sampling_cust_v group by 1 order by 1;
+// null: 27.9719
+
+//The SEED (30) parameter specifies that the random number generator used in sampling should start at a specific point (in this case, 30), so that you will get the same sample of rows every time you run this query. Seed is an optional field. 
+
+--------------------------------------------------------
+-- MATERIALIZED VIEWS -- 
+
+-- used when view is queried frquently and is cost and time intense, WHILE HAVING MINIMAL UPDATES TO THE SOURCE TABLE 
+-- mview results are stored separately and and mview is updated automatically when the table is updated (auto updates are managed by snowflake)
+-- execution plan for querying mview shows NO table scans 
+
+// TO TURN OFF / DISABLE GLOBAL CACHING
+SHOW PARAMETERS LIKE '%CACHE%';
+ALTER SESSION SET USE_CACHED_RESULT = FALSE;
+// GET QUERY TEXT FROM QUERY ID OR GET LAST 10 QUERY TEXT AND QUERY ID 
+SELECT LAST_QUERY_ID(1);
+SELECT QUERY_ID, QUERY_TEXT FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION()) LIMIT 10;
+--WHERE QUERY_ID = '<your_query_id>';
+
+USE DATABASE SNOWFLAKE_SAMPLE_DATA;
+SHOW SCHEMAS;
+USE SCHEMA TPCH_SF100;
+SHOW TABLES;
+DESC TABLE ORDERS;
+SELECT COUNT(*) FROM ORDERS; -- 150,000,000
+SELECT * FROM ORDERS; --1 MIN 30 S 1ST TIME; --117 MS 2ND TIME ; --98MS; --75 MS;
+// TURN OFF CACHING
+ALTER SESSION SET USE_CACHED_RESULT=FALSE; -- GLOBAL CACHING
+SELECT * FROM ORDERS; -- 1 MIN 37 SEC [FALSE] -- 81 MS [TRUE]
+ALTER SESSION SET USE_CACHED_RESULT=TRUE;
+// CLEAR CACHE
+USE ROLE ACCOUNTADMIN;
+SHOW GRANTS;
+GRANT OPERATE ON WAREHOUSE UDEMY_WH TO ROLE UDEMY_ROLE;
+USE ROLE UDEMY_ROLE;
+ALTER WAREHOUSE UDEMY_WH SUSPEND;
+ALTER WAREHOUSE UDEMY_WH RESUME;
+SHOW PARAMETERS LIKE 'USE_CACHED_RESULT';
+SELECT * FROM ORDERS; -- 63MS AFTER WAREHOUSE SUSPEND AND RESUME
+// SAMPLE COMPLEX QUERY
+SELECT
+YEAR(O_ORDERDATE) AS YEAR,
+MAX(O_COMMENT) AS MAX_COMMENT,
+MIN(O_COMMENT) AS MIN_COMMENT,
+MAX(O_CLERK) AS MAX_CLERK,
+MIN(O_CLERK) AS MIN_CLERK
+FROM ORDERS
+GROUP BY YEAR(O_ORDERDATE)
+ORDER BY YEAR(O_ORDERDATE); -- 11572 MS --138 MS
+// CREATE MATERIALISED VIEW 
+CREATE MATERIALISED VIEW UDEMY_DB.UDEMY_SCH.ORDERS_MV 
+AS 
+SELECT
+YEAR(O_ORDERDATE) AS YEAR,
+MAX(O_COMMENT) AS MAX_COMMENT,
+MIN(O_COMMENT) AS MIN_COMMENT,
+MAX(O_CLERK) AS MAX_CLERK,
+MIN(O_CLERK) AS MIN_CLERK
+FROM SNOWFLAKE_SAMPLE_DATA.TPCH_SF100.ORDERS; -- DID NOT WORK 
+// CREATING TABLE FIRST IN THE ACCOUNT FROM OTHER DB
+CREATE TABLE UDEMY_DB.UDEMY_SCH.ORDERS_SF 
+AS 
+SELECT * FROM SNOWFLAKE_SAMPLE_DATA.TPCH_SF100.ORDERS;
+// CREATING MVIEW FROM TABLE IN SAME DB
+USE DATABASE UDEMY_DB;
+USE SCHEMA UDEMY_SCH;
+SHOW TABLES;
+DESC TABLE UDEMY_DB.UDEMY_SCH.ORDERS_SF;
+DESC TABLE SNOWFLAKE_SAMPLE_DATA.TPCH_SF100.ORDERS;
+SELECT get_ddl('TABLE','SNOWFLAKE_SAMPLE_DATA.TPCH_SF100.ORDERS'); -- NOT SUPPORTED ON SHARED DATABASE
+SELECT get_ddl('TABLE','UDEMY_DB.UDEMY_SCH.ORDERS_SF');
+GRANT CREATE MATERIALIZED VIEW ON SCHEMA UDEMY_SCH TO ROLE UDEMY_ROLE;
+
+CREATE MATERIALIZED VIEW UDEMY_DB.UDEMY_SCH.ORDERS_SF_MV 
+AS 
+SELECT
+YEAR(O_ORDERDATE) AS YEAR,
+MAX(O_COMMENT) AS MAX_COMMENT,
+MIN(O_COMMENT) AS MIN_COMMENT,
+MAX(O_CLERK) AS MAX_CLERK,
+MIN(O_CLERK) AS MIN_CLERK
+FROM UDEMY_DB.UDEMY_SCH.ORDERS_SF
+GROUP BY YEAR(O_ORDERDATE);
+
+SELECT * FROM UDEMY_DB.UDEMY_SCH.ORDERS_SF_MV ORDER BY YEAR; --954MS
+SELECT
+YEAR(O_ORDERDATE) AS YEAR,
+MAX(O_COMMENT) AS MAX_COMMENT,
+MIN(O_COMMENT) AS MIN_COMMENT,
+MAX(O_CLERK) AS MAX_CLERK,
+MIN(O_CLERK) AS MIN_CLERK
+FROM UDEMY_DB.UDEMY_SCH.ORDERS_SF
+GROUP BY YEAR(O_ORDERDATE)
+ORDER BY YEAR; -- (567ms) 
+
+// MVIEW AUTO UPDATE
+DESC TABLE ORDERS_SF;
+INSERT INTO ORDERS_SF (O_COMMENT) VALUES ('TEST_INSERT_FOR_MVIEW');
+SELECT * FROM UDEMY_DB.UDEMY_SCH.ORDERS_SF_MV ORDER BY YEAR; --(366ms) 100.0% 
+-- NO PROCESSING, ONLY INITIALIZATION IN QUERY PROFILE FOR MVIEW 
+SELECT
+YEAR(O_ORDERDATE) AS YEAR,
+MAX(O_COMMENT) AS MAX_COMMENT,
+MIN(O_COMMENT) AS MIN_COMMENT,
+MAX(O_CLERK) AS MAX_CLERK,
+MIN(O_CLERK) AS MIN_CLERK
+FROM UDEMY_DB.UDEMY_SCH.ORDERS_SF
+GROUP BY YEAR(O_ORDERDATE)
+ORDER BY YEAR; -- (378ms) 100.0%
+
+//REFRESHING MVIEW
+SHOW MATERIALIZED VIEWS;
+SELECT * FROM ORDERS_SF_MV;
+REFRESH MATERIALIZED VIEW ORDERS_SF_MV;
+// checking REFRESH HISTORY
+SELECT * FROM TABLE(INFORMATION_SCHEMA.MATERIALIZED_VIEW_REFRESH_HISTORY());
+
+// NOTE:
+-- MATERIALIZED VIEWS ARE NOT RECOMMENDED FOR TABLES WITH FREQUENT CHANGES 
+-- INCURRED ADDITIONAL MAINTENENCE COSTS SINCE REFRESHING IS MANAGED BY SNOWFLAKE 
+-- CONSIDER USING TASKS OR STREAM INSTEAD TO LOWER COSTS 
+-- Compaction is an internal process that Snowflake uses to optimize the storage and performance of materialized views.
+-- LIMITATIONS: 
+    -- JOINS, UDF, ORDER BY, LIMIT AND HAVING CLAUSES NOT SUPPORTED 
+    -- LIMITED AGGRIGATE FUNCTIONS 
+
+--------------------------------------------------------
+-- DYNAMIC DATA MASKING -- COLUMN MASKING -- 
+
+USE DATABASE UDEMY_DB;
+CREATE ROLE MASKING_ROLE;
+SHOW ROLES;
+SHOW TABLES;
+USE ROLE ACCOUNTADMIN;
+DESC TABLE CUSTOMERS;
+SELECT * FROM CUSTOMERS LIMIT 5;
+
+// GRANTS TO CREATE AND APPLY MASKING POLICY 
+GRANT CREATE MASKING POLICY ON SCHEMA UDEMY_SCH TO ROLE MASKING_ROLE;
+GRANT APPLY MASKING POLICY ON ACCOUNT TO ROLE MASKING_ROLE;
+GRANT ROLE MASKING_ROLE TO ROLE UDEMY_ROLE;
+
+// CREATING AND APPLYING MASKING POLICY -- COLUMN LEVEL
+CREATE OR REPLACE MASKING POLICY AGE_MASK
+AS (VAL NUMBER) RETURNS NUMBER -> 
+CASE 
+WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN') THEN VAL 
+ELSE '00'
+END ;
+SHOW MASKING POLICIES;
+SELECT GET_DDL('TABLE','CUSTOMERS');
+ALTER TABLE CUSTOMERS MODIFY COLUMN "age" SET MASKING POLICY AGE_MASK;
+SELECT * FROM CUSTOMERS LIMIT 5;
+//TESING MASKIJNG POLICY 
+USE ROLE MASKING_ROLE;
+GRANT USAGE ON WAREHOUSE UDEMY_WH TO ROLE MASKING_ROLE;
+GRANT USAGE ON DATABASE UDEMY_DB TO ROLE MASKING_ROLE;
+GRANT USAGE ON SCHEMA UDEMY_SCH TO ROLE MASKING_ROLE;
+GRANT SELECT ON ALL TABLES IN SCHEMA UDEMY_SCH TO ROLE MASKING_ROLE;
+SELECT * FROM UDEMY_DB.UDEMY_SCH.CUSTOMERS LIMIT 5;
+
+// CHECK WHICH COLUMNS ARE USING MASKING POLICY
+SELECT * FROM table(information_schema.policy_references(policy_name=>'AGE_MASK'));
+
+// ALTER EXISTING MASKING POLICY
+ALTER MASKING POLICY AGE_MASK SET BODY ->
+CASE 
+WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN') THEN VAL 
+ELSE '00.00'
+END ;
+
+// SAMPLE POLICIES
+// string concatination 
+CREATE MASKING POLICY NAME_MASK
+AS (X STRING) RETURNS STRING -> 
+CASE 
+WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN') THEN X
+ELSE CONCAT(LEFT(X,2),'-------')
+END;
+ALTER TABLE UDEMY_DB.UDEMY_SCH.CUSTOMERS MODIFY COLUMN "first_name" SET MASKING POLICY NAME_MASK;
+ALTER TABLE UDEMY_DB.UDEMY_SCH.CUSTOMERS MODIFY COLUMN "last_name"  SET MASKING POLICY NAME_MASK;
+
+//regex -- hide email 
+CREATE MASKING POLICY EMAIL_MASK 
+AS (YY STRING) RETURNS STRING -> 
+CASE 
+WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN') THEN YY
+ELSE regexp_replace(YY,'.+\@','*****@')
+END;
+ALTER TABLE UDEMY_DB.UDEMY_SCH.CUSTOMERS MODIFY COLUMN "email" SET MASKING POLICY EMAIL_MASK;
+
+//hash mask
+CREATE MASKING POLICY HASH_MASK 
+AS (ZZ STRING) RETURNS STRING -> 
+CASE 
+WHEN CURRENT_TIME() > '12:00:00' THEN ZZ
+ELSE SHA2(ZZ) 
+END;
+ALTER TABLE CUSTOMERS MODIFY COLUMN "city" set masking policy HASH_MASK;
+
+DESC TABLE CUSTOMERS;
+ALTER TABLE CUSTOMERS MODIFY COLUMN CREATE_DATE SET DEFAULT current_date();
+// NOTE: CANNOT ADD DEFAULT VALUE TO EXISTSING COLUMN UNLESS ITS A SEQUENCE
+UPDATE CUSTOMERS SET CREATE_DATE = CURRENT_DATE();
+
+CREATE OR REPLACE MASKING POLICY DATE_MASK 
+AS (AA DATE) RETURNS DATE -> 
+CASE
+WHEN CURRENT_TIME() < '12:00:00' THEN AA
+ELSE date_from_parts(1111,11,1)::DATE
+END;
+ALTER TABLE CUSTOMERS MODIFY COLUMN CREATE_DATE SET MASKING POLICY DATE_MASK;
+ALTER TABLE CUSTOMERS MODIFY COLUMN CREATE_DATE UNSET MASKING POLICY;
+
+// TO SET DEFAULT VALUE FOR EXISTING COLUMN 
+--ALTER TABLE CUSTOMERS ADD COLUMN CREATE_DATE_NEW DATE DEFAULT CURRENT_DATE(); -- DID NOT WORK 
+
+select * from CUSTOMERS limit 10;
+
+// SECONDARY ROLES
+USE SECONDARY ROLES UDEMY_ROLE, MASKING_ROLE;
+SELECT CURRENT_SECONDARY_ROLES();
+USE SECONDARY ROLES ALL;
+USE SECONDARY ROLES NONE;
+
+--------------------------------------------------------
+-- DATA SHARING -- 
+
+-- snowflake -> snowflake account data sharing: account 2 (read only) can use their own compute resources with no physical data copy required like clones 
+-- snowflake -> non-snowflake user data daring: account 1 creates new reader account and uses its own compute 
+-- typically data sharing is not supported for editions: business critical to lower (override possible with OVERRIDE SHARE RESTRICTIONS priv and SHARE_RESTRICTIONS = FALSE flag)
+-- check for security and compliance for target account if its not using Business scritical edition 
+-- editions below BC are not PCI-DSS certified 
+
+show databases;
+show tables;
+
+// CREATING SHARE 
+GRANT CREATE SHARE ON ACCOUNT TO ROLE UDEMY_ROLE;
+CREATE SHARE UDEMY_SHR;
+SHOW GRANTS TO ROLE UDEMY_ROLE;
+GRANT USAGE ON DATABASE UDEMY_DB TO ROLE UDEMY_ROLE WITH GRANT OPTION;
+GRANT USAGE ON SCHEMA UDEMY_SCH TO ROLE UDEMY_ROLE WITH GRANT OPTION;
+GRANT USAGE ON DATABASE UDEMY_DB TO SHARE UDEMY_SHR;
+GRANT USAGE ON SCHEMA UDEMY_SCH TO SHARE UDEMY_SHR;
+GRANT SELECT ON TABLE ORDERS_SF TO SHARE UDEMY_SHR;
+SHOW GRANTS TO SHARE UDEMY_SHR;
+
+// CREATING AND ADDING READER ACCOUNT (MANAGED) FROM EXISTING SF ACCOUNT
+USE ROLE ACCOUNTADMIN;
+GRANT CREATE USER ON ACCOUNT TO ROLE UDEMY_ROLE;
+CREATE MANAGED ACCOUNT UDEMY_READER_ACC
+ADMIN_NAME = READER_ACC_1
+ADMIN_PASSWORD = 'READER_acc_1'
+TYPE = READER;
+
+// GRANT OWNERSHIP ON SHARE UDEMY_SHR TO ROLE ACCOUNTADMIN; -- DID NOT WORK
+ALTER SHARE UDEMY_SHR ADD ACCOUNT = ww06273;
+
+SHOW MANAGED ACCOUNTS;
+SHOW SHARES;
+DESC SHARE JZYUVSX.MA39300.UDEMY_SHR;
+
+-- PARAMETERS --
+// show parameters in session
+SHOW PARAMETERS;
+// SHOW PARAMETERS IN ACCOUNT
+SHOW PARAMETERS IN ACCOUNT;
+// DATABASE PARAMETERS
+SHOW PARAMETERS IN DATABASE UDEMY_DB;
+// WAREHOUSE PARAMTERS 
+SHOW PARAMETERS IN WAREHOUSE UDEMY_WH;
+// SHARE_RESTRICTION PARAMETER TO SHARE FROM BC TO NON-BC EDITION ACCOUNT
+SHOW PARAMETERS LIKE '%SHARE%';
+SHOW PARAMETERS LIKE '%SHARE%' IN ACCOUNT;
+SHOW PARAMETERS LIKE '%SHARE%' IN DATABASE UDEMY_DB;
+SHOW PARAMETERS LIKE '%SHARE%' IN WAREHOUSE UDEMY_WH;
+SHOW SHARES;
+SHOW GRANTS TO SHARE UDEMY_SHR;
+GRANT OVERRIDE SHARE RESTRICTIONS ON ACCOUNT TO ROLE UDEMY_ROLE;
+alter share UDEMY_SHR ADD ACCOUNT = ww06273 share_restrictions=false;
+DESC SHARE UDEMY_SHR;
+
+// CREATING DATABASE FROM SHARE IN READER ACCOUNT 
+SHOW MANAGED ACCOUNTS;
+-- https://ww06273.us-east-2.aws.snowflakecomputing.com
+-- OPEN THE LINK AND LOGIN USING CREDENTIALS FOR READER ACCOUNT
+// IN READER ACCOUNT:
+SHOW SHARES;
+DESC SHARE JZYUVSX.MA39300.UDEMY_SHR;
+// CREATE DATABASE FROM SHARE
+CREATE DATABASE UDEMY_READER_DB FROM SHARE JZYUVSX.MA39300.UDEMY_SHR;
+
+SHOW DATABASES;
+SHOW SCHEMAS;
+SHOW TABLES;
+USE DATABASE UDEMY_READER_DB;
+USE SCHEMA UDEMY_SCH;
+DESC TABLE ORDERS_SF;
+
+// CREATE WAREHOUSE TO QUERY FROM THE TABLE 
+CREATE WAREHOUSE UDEMY_READER_WH
+WAREHOUSE_SIZE = 'X-SMALL'
+INITIALLY_SUSPENDED=TRUE;
+
+SHOW WAREHOUSES;
+ALTER WAREHOUSE UDEMY_READER_WH SET AUTO_SUSPEND=180;
+SELECT * FROM UDEMY_READER_DB.UDEMY_SCH.ORDERS_SF LIMIT 5;
+
+// CREATING USERS IN READER ACCOUNT AND GIVING ACCESS TO TABLE USING PUBLIC SCHEMA
+CREATE USER READER_111 PASSWORD = 'READER_acc_111';
+GRANT USAGE ON WAREHOUSE UDEMY_READER_WH TO ROLE PUBLIC;
+GRANT IMPORTED PRIVILEGES ON DATABASE UDEMY_READER_DB TO ROLE PUBLIC;
+SHOW GRANTS TO ROLE PUBLIC;
+
+// LOGIN USING NEW USER AND TEST ACCESS TO TABLE
+SELECT CURRENT_USER();
+SHOW TABLES;
+USE WAREHOUSE UDEMY_READER_WH;
+SELECT * FROM ORDERS_SF LIMIT 10;
+
+// SHARING ENTIRE/ FULL DATABASE AND SCHEMA
+-- CREATE DATABASE UDEMY_SF1_DB FROM SHARE SFSALESSHARED.SFC_SAMPLES_AWS_US_EAST_2.SAMPLE_DATA; -- WILL NOT WORK 
+-- CREATE SCHEMA UDEMY_SF1_DB.UDEMY_SF1_SCH CLONE SNOWFLAKE_SAMPLE_DATA.TPCH_SF1; -- WILL NOT WORK
+-- NOTE: Cannot clone OR CREATE from a schema OR DB that was imported from a share.
+
+CREATE DATABASE UDEMY_SF1_DB;
+SHOW DATABASES;
+CREATE TABLE UDEMY_SF1_DB.PUBLIC.CUSTOMER AS SELECT * FROM SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER;
+CREATE TABLE UDEMY_SF1_DB.PUBLIC.ORDERS AS SELECT * FROM SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.ORDERS;
+CREATE TABLE UDEMY_SF1_DB.PUBLIC.REGION AS SELECT * FROM SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.REGION;
+SHOW TABLES;
+
+CREATE SHARE UDEMY_SF1_SHR;
+GRANT USAGE ON DATABASE UDEMY_SF1_DB TO SHARE UDEMY_SF1_SHR;
+GRANT USAGE ON SCHEMA PUBLIC TO SHARE UDEMY_SF1_SHR;
+GRANT SELECT ON ALL TABLES IN DATABASE UDEMY_SF1_DB TO SHARE UDEMY_SF1_SHR;
+-- OR -- 
+-- GRANT SELECT ON ALL TABLES IN SCHEMA PUBLIC TO SHARE UDEMY_SF1_SHR;
+SHOW GRANTS TO SHARE UDEMY_SF1_SHR;
+SHOW MANAGED ACCOUNTS;
+ALTER SHARE UDEMY_SF1_SHR ADD ACCOUNT = WW06273;
+SHOW SHARES;
+
+// READER ACCOUNT: CREATING DATABASE FROM SHARE 
+SHOW SHARES;
+CREATE DATABASE UDEMY_SF1_READER_DB FROM SHARE JZYUVSX.MA39300.UDEMY_SF1_SHR;
+SHOW TABLES;
+GRANT IMPORTED PRIVILEGES ON DATABASE UDEMY_SF1_READER_DB TO ROLE PUBLIC;
+
+// END PUBLIC USER WITH PIBLIC ROLE IN READER ACCOUNT:
+SHOW DATABASES;
+USE DATABASE UDEMY_SF1_READER_DB;
+SHOW TABLES;
+SELECT * FROM REGION LIMIT 10;
+
+// VIEWS AND SECURE VIEWS 
+SHOW TABLES;
+SELECT * FROM ORDERS_SF LIMIT 5;
+GRANT CREATE VIEW ON SCHEMA UDEMY_SCH TO ROLE UDEMY_ROLE;
+
+CREATE VIEW ORDERS_SF_V AS 
+SELECT 
+O_ORDERKEY, O_ORDERSTATUS, O_TOTALPRICE, O_ORDERDATE
+FROM ORDERS_SF;
+
+CREATE SECURE VIEW ORDERS_SF_SV AS 
+SELECT 
+O_ORDERKEY, O_ORDERSTATUS, O_TOTALPRICE, O_ORDERDATE
+FROM ORDERS_SF;
+
+SHOW VIEWS;
+SHOW SHARES;
+GRANT SELECT ON VIEW ORDERS_SF_SV TO SHARE UDEMY_SHR;
+--GRANT SELECT ON VIEW ORDERS_SF_V TO SHARE UDEMY_SHR;
+// CANNOT SHARE REGULAR VEIWS IN A SHARE, ONLY SECURE VIEWS
+
+--------------------------------------------------------
+-- IAM Policy for Snowflake access to S3 bucket -- 
+
+// To create an IAM policy for Snowflake access to an S3 bucket,
+    -- Log into the AWS Management Console.
+    -- From the home dashboard, choose Identity & Access Management (IAM).
+    -- Choose Policies from the left-hand navigation pane.
+    -- Click Create Policy.
+    -- Click the JSON tab.
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:PutObject",
+                "s3:GetObject",
+                "s3:GetObjectVersion",
+                "s3:DeleteObject",
+                "s3:DeleteObjectVersion"
+            ],
+            "Resource": "arn:aws:s3:::<bucket_name>/<prefix>/*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:ListBucket",
+                "s3:GetBucketLocation"
+            ],
+            "Resource": "arn:aws:s3:::<bucket_name>",
+            "Condition": {
+                "StringLike": {
+                    "s3:prefix": [
+                        "<prefix>/*"
+                    ]
+                }
+            }
+        }
+    ]
+}
+
+-- Attach this policy to a role on AWS IAM and copy the ARN number of that role 
+
+// create storage integration object
+create or replace storage integration s3_int
+TYPE = EXTERNAL_STAGE
+STORAGE_PROVIDER = S3
+ENABLED = TRUE
+STORAGE_AWS_ROLE_ARN = '<ARN_of_role_AWS>'
+STORAGE_ALLOWED_LOCATIONS = ('s3://<your-bucket-name>/<your-path>/', 's3: //<your-bucket-name>/<your-path>/')
+COMMENT = 'This an optional comment'
+
+// attach the role ARN to a storage integration object on snowflake and create a stage using this object with 'STORAGE_INTEGRATION = s3_int' in create stage statement 
+
+--------------------------------------------------------
+-- PARTNET CONNECT 3RD PARTY TOOLS -- 
+
+Data Integration:
+    Ab Initio
+    Agile Data Engine
+    Alteryx
+    Azure Data Factory
+    Coalesce
+    CData Software
+    Datameer
+    DataVirtuality
+    dbt
+    Denodo
+Business Intelligence (BI):
+    Adobe Campaign
+    Aginity Pro / Aginity Team
+    Astrato
+    AtScale
+    AWS QuickSight
+
+Machine Learning & Data Science:
+    Alteryx
+    Amazon SageMaker
+    Big Squid
+
+Security, Governance & Observability:
+    Acryl Data
+    Alation
+    ALTR
+    Anomalo
+    Atlan
+    Baffle
+    Bigeye
+    
+SQL Development & Management:
+    Aginity
+    DataOps
+    DBeaver
+    Agile Data Engine
+    SqlDBM
+    SQLWorkbench/J
+
+--------------------------------------------------------
+-- STREAMS -- 
+
+-- STREAMS ARE OBJECTS THAT RECORD DML CHANGES TO A TABLE, AND IS CALLED CHANGE DATA CAPTURE (CDC) [DELETE, INSERT, UPDATE]
+-- COLUMNS ASSOCIATED TO STREAMS (METADATA) FOR, AND IN EACH TABLE: METADATA$ACTION, METADATA$ISUPDATE, METADATA$ROW_ID
+
+CREATE OR REPLACE TABLE SALES_RAW_STG (
+ID VARCHAR,
+PRODUCT VARCHAR,
+PRICE VARCHAR,
+AMOUNT VARCHAR,
+STORE_ID VARCHAR
+);
+insert into SALES_RAW_STG 
+    values
+        (1,'Banana',1.99,1,1),
+        (2,'Lemon',0.99,1,1),
+        (3,'Apple',1.79,1,2),
+        (4,'Orange Juice',1.89,1,2),
+        (5,'Cereals',5.98,2,1);
+
+CREATE OR REPLACE TABLE STORE_TABLE (
+STORE_ID NUMBER,
+LOCATION VARCHAR, 
+EMPLOYEES NUMBER
+);
+INSERT INTO STORE_TABLE VALUES(1,'Chicago',33), (2,'London',12);
+
+SELECT 
+SRS.ID, SRS.PRODUCT, SRS.PRICE, SRS.AMOUNT, SRS.STORE_ID, ST.LOCATION, ST.EMPLOYEES
+FROM SALES_RAW_STG SRS 
+JOIN STORE_TABLE ST ON 
+SRS.STORE_ID = ST.STORE_ID;
+
+// Q: WHY CREATE A TABLE, AND THEN INSERT WHEN YOU CAN CREATE DIRECTLY IN CREATE+SELECT STATEMENT 
+create or replace table SALES_CORE_T(
+  id int,
+  product varchar,
+  price number,
+  amount int,
+  store_id int,
+  location varchar,
+  employees int);
+
+INSERT INTO SALES_CORE_T
+SELECT 
+SRS.ID, SRS.PRODUCT, SRS.PRICE, SRS.AMOUNT, SRS.STORE_ID, ST.LOCATION, ST.EMPLOYEES
+FROM SALES_RAW_STG SRS 
+JOIN STORE_TABLE ST ON 
+SRS.STORE_ID = ST.STORE_ID;
+
+SELECT * FROM SALES_CORE_T;
+
+// CREATING STREAM OBJECT ON RAW DATA / STAGE TABLE
+GRANT CREATE STREAM ON SCHEMA UDEMY_SCH TO ROLE UDEMY_ROLE;
+CREATE OR REPLACE STREAM UDEMY_STREAM_SALES ON TABLE SALES_RAW_STG;
+SHOW STREAMS;
+DESC STREAM UDEMY_STREAM_SALES;
+// WHAT IS THE 'STALE_AFTER' COLUMN IN SHOW STREAM? :If a stream becomes stale, it cannot be read. To prevent a stream from becoming stale, you should consume the stream before STALE_AFTER
+// the extended data retention period for the source object of a stream is up to a maximum of 14 days by default, regardless of the Snowflake edition for your account.
+
+// INSERT STATEMENTS
+
+INSERT INTO SALES_RAW_STG VALUES (6,'Mango',1.99,1,2), (7,'Garlic',0.99,1,1);
+SELECT * FROM UDEMY_STREAM_SALES;
+select * from SALES_RAW_STG;
+select * from SALES_CORE_T;
+
+INSERT INTO SALES_CORE_T
+SELECT 
+USS.ID, USS.PRODUCT, USS.PRICE, USS.AMOUNT, USS.STORE_ID, ST.LOCATION, ST.EMPLOYEES
+FROM UDEMY_STREAM_SALES USS 
+JOIN STORE_TABLE ST ON 
+USS.STORE_ID = ST.STORE_ID;
+
+// UPDATE STATEMENTS
+
+UPDATE SALES_RAW_STG SET PRODUCT = 'Potato' WHERE ID = 1;
+MERGE INTO SALES_CORE_T SCT USING UDEMY_STREAM_SALES USS ON SCT.ID = USS.ID
+WHEN MATCHED
+AND USS.METADATA$ACTION = 'INSERT'
+AND USS.METADATA$ISUPDATE = TRUE
+THEN UPDATE 
+SET 
+SCT.PRODUCT =  USS.PRODUCT,
+SCT.PRICE = USS.PRICE,
+SCT.AMOUNT = USS.AMOUNT,
+SCT.STORE_ID = USS.STORE_ID;
+
+// VALUES FOR PRICE COLUMN IN SALES_CORE_T HAVE BEEN ROUNDED OFF TO THE NEXT INTEGER. WHY? ANS: NUMBER (38,0) MEANS NO DECIMAL POINTS.
+
+// CHANGE COLUMN DATATYPE
+-- changing the scale of a number is not supported
+-- ALTER TABLE SALES_CORE_T MODIFY COLUMN PRICE SET DATA TYPE NUMBER (38,2);
+
+// DELETE STATEMENT 
+
+DELETE FROM SALES_RAW_STG WHERE PRODUCT = 'Lemon';
+MERGE INTO SALES_CORE_T SCT USING UDEMY_STREAM_SALES USS ON SCT.ID = USS.ID
+WHEN MATCHED
+AND USS.METADATA$ACTION = 'DELETE'
+AND USS.METADATA$ISUPDATE = FALSE
+THEN DELETE;
+
+// PROCESS ALL DATA CHANGES AT ONCE | INSERT, UDATE AND DELETE 
+
+MERGE INTO SALES_CORE_T SCT 
+USING 
+( SELECT USS.*, ST.LOCATION, ST.EMPLOYEES FROM UDEMY_STREAM_SALES USS JOIN STORE_TABLE ST ON USS.STORE_ID = ST.STORE_ID ) ABC
+ON SCT.ID = ABC.ID
+WHEN MATCHED -- UPDATE 
+AND ABC.METADATA$ACTION = 'INSERT'
+AND ABC.METADATA$ISUPDATE = TRUE
+THEN UPDATE 
+SET 
+SCT.PRODUCT =  ABC.PRODUCT,
+SCT.PRICE = ABC.PRICE,
+SCT.AMOUNT = ABC.AMOUNT,
+SCT.STORE_ID = ABC.STORE_ID
+WHEN MATCHED -- DELETE 
+AND ABC.METADATA$ACTION = 'DELETE'
+AND ABC.METADATA$ISUPDATE = FALSE
+THEN DELETE
+WHEN NOT MATCHED -- INSERT 
+AND ABC.METADATA$ACTION = 'INSERT'
+AND ABC.METADATA$ISUPDATE = FALSE
+THEN INSERT
+(SCT.ID, SCT.PRODUCT, SCT.PRICE, SCT.AMOUNT, SCT.STORE_ID, SCT.LOCATION, SCT.EMPLOYEES)
+VALUES 
+(ABC.ID, ABC.PRODUCT, ABC.PRICE, ABC.AMOUNT, ABC.STORE_ID, ABC.LOCATION, ABC.EMPLOYEES);
+
+INSERT INTO SALES_RAW_STG VALUES (10,'Lemon Juice',2.99,1,1);
+
+UPDATE SALES_RAW_STG
+SET PRICE = 4
+WHERE PRODUCT ='Mango';
+       
+DELETE FROM SALES_RAW_STG
+WHERE PRODUCT = 'Lemon Juice';    
+
+SELECT * FROM UDEMY_STREAM_SALES;
+select * from SALES_RAW_STG;
+select * from SALES_CORE_T;
+
+// COMBINING STREAMS WITH TASKS 
+
+SELECT SYSTEM$STREAM_HAS_DATA('UDEMY_STREAM_SALES');
+
+GRANT CREATE TASK ON SCHEMA UDEMY_SCH TO ROLE UDEMY_ROLE;
+GRANT EXECUTE TASK ON ACCOUNT TO ROLE UDEMY_ROLE;
+CREATE OR REPLACE TASK SALES_TASK
+WAREHOUSE = 'UDEMY_WH'
+SCHEDULE = '1 MINUTE'
+WHEN SYSTEM$STREAM_HAS_DATA('UDEMY_STREAM_SALES')
+AS 
+MERGE INTO SALES_CORE_T SCT 
+USING 
+( SELECT USS.*, ST.LOCATION, ST.EMPLOYEES FROM UDEMY_STREAM_SALES USS JOIN STORE_TABLE ST ON USS.STORE_ID = ST.STORE_ID ) ABC
+ON SCT.ID = ABC.ID
+WHEN MATCHED -- UPDATE 
+AND ABC.METADATA$ACTION = 'INSERT'
+AND ABC.METADATA$ISUPDATE = TRUE
+THEN UPDATE 
+SET 
+SCT.PRODUCT =  ABC.PRODUCT,
+SCT.PRICE = ABC.PRICE,
+SCT.AMOUNT = ABC.AMOUNT,
+SCT.STORE_ID = ABC.STORE_ID
+WHEN MATCHED -- DELETE 
+AND ABC.METADATA$ACTION = 'DELETE'
+AND ABC.METADATA$ISUPDATE = FALSE
+THEN DELETE
+WHEN NOT MATCHED -- INSERT 
+AND ABC.METADATA$ACTION = 'INSERT'
+AND ABC.METADATA$ISUPDATE = FALSE
+THEN INSERT
+(SCT.ID, SCT.PRODUCT, SCT.PRICE, SCT.AMOUNT, SCT.STORE_ID, SCT.LOCATION, SCT.EMPLOYEES)
+VALUES 
+(ABC.ID, ABC.PRODUCT, ABC.PRICE, ABC.AMOUNT, ABC.STORE_ID, ABC.LOCATION, ABC.EMPLOYEES);
+
+SHOW TASKS;
+ALTER TASK SALES_TASK RESUME;
+ALTER TASK SALES_TASK SUSPEND;
+
+INSERT INTO SALES_RAW_STG VALUES (11,'Milk',1.99,1,2);
+INSERT INTO SALES_RAW_STG VALUES (12,'Chocolate',4.49,1,2);
+INSERT INTO SALES_RAW_STG VALUES (13,'Cheese',3.89,1,1);
+
+// TASK HISTORY
+select *
+  from table(information_schema.task_history())
+  order by scheduled_time desc;
+
+// TYPES OF STREAMS 
+SHOW STREAMS;
+-- 2 TYPES OF STREAMS: STANDARD [INSERT, UPDATE, DELETE] -> DEFAULT , APPEND-ONLY [INSERT]
+// STANDARD OR DEFAULT STREAM
+CREATE STREAM SALES_STREAM_DEFAULT_STANDARD ON TABLE SALES_RAW_STG;
+// APPEND-ONLY STREAM 
+CREATE STREAM SALES_STREAM_APPEND ON TABLE SALES_RAW_STG 
+APPEND_ONLY = TRUE;
+
+INSERT INTO SALES_RAW_STG VALUES (14,'Honey',4.99,1,1);
+INSERT INTO SALES_RAW_STG VALUES (15,'Coffee',4.89,1,2);
+INSERT INTO SALES_RAW_STG VALUES (15,'Coffee',4.89,1,2);
+DELETE FROM SALES_RAW_STG WHERE ID=7;
+
+SELECT * FROM UDEMY_STREAM_SALES;
+SELECT * FROM SALES_STREAM_DEFAULT_STANDARD;
+SELECT * FROM SALES_STREAM_APPEND;
+
+// ANOTHER (2ND) WAY TO CONSUME A STREAM -> CREATE TABLE OR VIEW FROM STREAM TABLE 
+CREATE TEMPORARY TABLE STREAM_STANDARD_CONSUMED 
+AS
+SELECT * FROM SALES_STREAM_DEFAULT_STANDARD;
+
+CREATE VIEW STREAM_APPEND_CONSUMED_V 
+AS
+SELECT * FROM SALES_STREAM_APPEND;
+
+// ALTERNATE METHOD TO TRACK CHANGES ON A TABLE WITHOUT STREAM :> CHANGE CLAUSE 
+
+create or replace table sales_raw(
+	id varchar,
+	product varchar,
+	price varchar,
+	amount varchar,
+	store_id varchar);
+insert into sales_raw
+	values
+		(1, 'Eggs', 1.39, 1, 1),
+		(2, 'Baking powder', 0.99, 1, 1),
+		(3, 'Eggplants', 1.79, 1, 2),
+		(4, 'Ice cream', 1.89, 1, 2),
+		(5, 'Oats', 1.98, 2, 1);
+
+// ENABLING CHANGE TRACKING THROUGH CHANGE CLAUSE 
+ALTER TABLE sales_raw 
+SET CHANGE_TRACKING = TRUE;
+
+// DEFAULT OR STANDARD, AND APPEND-ONLY MODE OF CHANGE TRACKING CAN BE QUERIED USING TIME TRAVEL OR OFFSET
+SELECT CURRENT_TIMESTAMP(); -- 2023-04-08 17:23:41.471 -0700
+
+SELECT * FROM SALES_RAW
+CHANGES(information => default)
+AT (offset => -0.5*60); -- CHANGES FROM 30 SECONDS AGO
+
+SELECT * FROM SALES_RAW
+CHANGES(information => APPEND_ONLY)
+AT (offset => -2*60); -- CHANGES FROM 2 MINUTES AGO 
+
+INSERT INTO SALES_RAW VALUES (6, 'Bread', 2.99, 1, 2);
+INSERT INTO SALES_RAW VALUES (7, 'Onions', 2.89, 1, 2);
+
+SELECT * FROM SALES_RAW
+CHANGES(information => default)
+AT (TIMESTAMP => '2023-04-08 17:23:41.471 -0700'::TIMESTAMP_TZ); -- STANDARD OR DEFAULT CHANGES FROM TIMESTAMP
+
+SELECT * FROM SALES_RAW
+CHANGES(information => APPEND_ONLY)
+AT (TIMESTAMP => '2023-04-08 17:23:41.471 -0700'::TIMESTAMP_TZ);
+
+UPDATE SALES_RAW
+SET PRODUCT = 'Toast2' WHERE ID=6;
+
+// CHANGES WILL NOT BE CONSUMED EVEN WHEN YOU CREATE A TABLE OR VIEW
+CREATE OR REPLACE TABLE PRODUCTS_CT
+AS
+SELECT * FROM SALES_RAW
+CHANGES(information  => APPEND_ONLY)
+AT (timestamp => '2023-04-08 17:23:41.471 -0700'::timestamp_tz);
+
+SELECT * FROM PRODUCTS_CT;
+
+--------------------------------------------------------
+-- UNLOADING DATA -- 
+// FROM SNOWSQL:
+snowsql -c expense -q 'select * from EXP_TAB_VIEW_MV order by 1' -o output_file=expense_tab.csv -o output_format=csv
+
+//INTO STAGE 
+COPY INTO @stage_name/file_name_prefix
+FROM table_name
+FILE_FORMAT = (TYPE = CSV);
+
+--------------------------------------------------------
+-- [FIND OUT THIS STUFF]
+-- restore table, schema and database 
